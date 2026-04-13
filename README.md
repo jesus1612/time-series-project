@@ -13,6 +13,8 @@ Repositorio unificado con la librería **TSLib**, la interfaz **Shiny for Python
 
 La UI importa TSLib vía `pip install -e ../time-series-library` (definido en [`tslib-shiny-app/requirements.txt`](tslib-shiny-app/requirements.txt)).
 
+**Documentación de teoría, ARIMA, benchmarks (statsmodels) y paralelismo:** [`docs/series-tiempo-arima-y-paralelismo.md`](docs/series-tiempo-arima-y-paralelismo.md).
+
 ## Requisitos
 
 - **Python 3.9+** (comprobado por el Makefile de TSLib).
@@ -29,16 +31,18 @@ Instalación de JDK (referencia):
 Desde la raíz del clon:
 
 ```bash
-# 1) Librería (crea time-series-library/venv y dependencias de desarrollo)
-make install-lib
+# Todo en uno: venv de TSLib + venv de la UI (editable) y arrancar Shiny
+make up
+```
 
-# 2) Tests de la librería (usa JDK si está disponible; Spark puede omitirse)
-make test-lib
+Equivalente a `make install-all` seguido de `make run-ui`. `install-all` ejecuta `install-lib` y `install-ui` (hay **dos entornos virtuales**: `time-series-library/venv` y `tslib-shiny-app/venv`).
 
-# 3) Interfaz: instala TSLib en editable y dependencias de la app
-make install-ui
+Flujo manual:
 
-# 4) Ejecutar la app
+```bash
+make install-lib   # TSLib dev en time-series-library/venv
+make test-lib      # opcional; requiere JDK para tests Spark
+make install-ui    # UI + TSLib editable en tslib-shiny-app/venv
 make run-ui
 ```
 

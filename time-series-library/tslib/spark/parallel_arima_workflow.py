@@ -26,8 +26,8 @@ try:
     from pyspark.sql import SparkSession, DataFrame
     from pyspark.sql.functions import col, lit, struct, collect_list, udf
     from pyspark.sql.types import (
-        StructType, StructField, StringType, IntegerType, 
-        DoubleType, ArrayType, FloatType
+        StructType, StructField, StringType, IntegerType,
+        DoubleType, ArrayType, FloatType, BooleanType,
     )
     SPARK_AVAILABLE = True
 except ImportError:
@@ -1030,111 +1030,209 @@ class ParallelARIMAWorkflow:
     # STEP 8: Backtesting with Fixed Windows
     # =========================================================================
     
-    def _backtest_fixed_windows(self, 
-                                windows: List[Dict[str, Any]], 
+    def _backtest_fixed_windows(self,
+                                windows: List[Dict[str, Any]],
                                 order: Tuple[int, int, int]) -> pd.DataFrame:
         """
-        Perform backtesting on fixed windows
-        
+        Perform backtesting on fixed windows (Spark mapInPandas per window).
+
         Refits model on each window's training set and evaluates on test set.
         Calculates MAE, RMSE, MAPE metrics.
-        
-        Parameters:
-        -----------
-        windows : list of dicts
-            Fixed windows with train/test splits
-        order : tuple
-            ARIMA order (p, d, q)
-            
-        Returns:
-        --------
-        results_df : pandas DataFrame
-            Backtesting results with metrics
         """
         if self.verbose:
             print("\n" + "="*70)
-            print("STEP 8: Backtesting with Fixed Windows")
+            print("STEP 8: Backtesting with Fixed Windows (Spark)")
             print("="*70)
             print(f"  Model: ARIMA{order}")
             print(f"  Windows: {len(windows)}")
-        
+
         p, d, q = order
-        results = []
-        
+        if not windows:
+            results_df = pd.DataFrame(
+                columns=[
+                    "window_id", "p", "d", "q", "success", "mae", "rmse", "mape",
+                    "phi", "theta", "c", "sigma2", "train_size", "test_size", "error",
+                ]
+            )
+            self.results_["step7_8_validation"] = {
+                "results_df": results_df,
+                "num_windows": 0,
+                "num_success": 0,
+                "metrics": {"avg_mae": np.nan, "avg_rmse": np.nan, "avg_mape": np.nan},
+            }
+            return results_df
+
+        tasks_list: List[Dict[str, Any]] = []
         for window in windows:
+            tasks_list.append(
+                {
+                    "window_id": int(window["window_id"]),
+                    "train_data": np.asarray(window["train_data"], dtype=float).tolist(),
+                    "test_data": np.asarray(window["test_data"], dtype=float).tolist(),
+                    "train_size": int(window["train_size"]),
+                    "test_size": int(window["test_size"]),
+                    "p": p,
+                    "d": d,
+                    "q": q,
+                }
+            )
+
+        tasks_pandas = pd.DataFrame(tasks_list)
+        from pyspark.sql.types import StructType, StructField, IntegerType, DoubleType, ArrayType, StringType, BooleanType
+
+        schema_in = StructType(
+            [
+                StructField("window_id", IntegerType(), True),
+                StructField("train_data", ArrayType(DoubleType()), True),
+                StructField("test_data", ArrayType(DoubleType()), True),
+                StructField("train_size", IntegerType(), True),
+                StructField("test_size", IntegerType(), True),
+                StructField("p", IntegerType(), True),
+                StructField("d", IntegerType(), True),
+                StructField("q", IntegerType(), True),
+            ]
+        )
+        tasks_df = self.spark.createDataFrame(tasks_pandas, schema=schema_in)
+        num_partitions = max(
+            1, min(len(tasks_pandas), self.spark.sparkContext.defaultParallelism)
+        )
+        tasks_df = tasks_df.repartition(num_partitions)
+
+        output_schema = StructType(
+            [
+                StructField("window_id", IntegerType(), True),
+                StructField("p", IntegerType(), True),
+                StructField("d", IntegerType(), True),
+                StructField("q", IntegerType(), True),
+                StructField("success", BooleanType(), True),
+                StructField("mae", DoubleType(), True),
+                StructField("rmse", DoubleType(), True),
+                StructField("mape", DoubleType(), True),
+                StructField("phi", ArrayType(DoubleType()), True),
+                StructField("theta", ArrayType(DoubleType()), True),
+                StructField("c", DoubleType(), True),
+                StructField("sigma2", DoubleType(), True),
+                StructField("train_size", IntegerType(), True),
+                StructField("test_size", IntegerType(), True),
+                StructField("error", StringType(), True),
+            ]
+        )
+
+        def backtest_map(iterator):
+            import pandas as pd
+            import numpy as np
+            import warnings
+
             try:
-                # Fit model on training data
-                model = ARIMAProcess(
-                    ar_order=p,
-                    diff_order=d,
-                    ma_order=q,
-                    trend='c',
-                    n_jobs=1
-                )
-                
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    model.fit(window['train_data'])
-                
-                # Get parameters
-                params = model._fitted_params
-                phi = [params['parameters'].get(f'phi_{i+1}', 0.0) for i in range(p)]
-                theta = [params['parameters'].get(f'theta_{i+1}', 0.0) for i in range(q)]
-                c = model.constant if hasattr(model, 'constant') else 0.0
-                sigma2 = params['parameters'].get('sigma2', 0.0)
-                
-                # Predict on test set
-                test_size = len(window['test_data'])
-                predictions = model.predict(steps=test_size)
-                actual = window['test_data']
-                
-                # Calculate metrics
-                mae = ForecastMetrics.mae(actual, predictions)
-                rmse = ForecastMetrics.rmse(actual, predictions)
-                mape = ForecastMetrics.mape(actual, predictions)
-                
-                results.append({
-                    'window_id': window['window_id'],
-                    'p': p, 'd': d, 'q': q,
-                    'success': True,
-                    'mae': mae,
-                    'rmse': rmse,
-                    'mape': mape,
-                    'phi': phi,
-                    'theta': theta,
-                    'c': c,
-                    'sigma2': sigma2,
-                    'train_size': window['train_size'],
-                    'test_size': window['test_size'],
-                    'error': None
-                })
-                
-            except Exception as e:
-                results.append({
-                    'window_id': window['window_id'],
-                    'p': p, 'd': d, 'q': q,
-                    'success': False,
-                    'mae': np.nan,
-                    'rmse': np.nan,
-                    'mape': np.nan,
-                    'phi': [],
-                    'theta': [],
-                    'c': np.nan,
-                    'sigma2': np.nan,
-                    'train_size': window['train_size'],
-                    'test_size': window['test_size'],
-                    'error': str(e)
-                })
-        
-        results_df = pd.DataFrame(results)
-        
-        # Calculate aggregate metrics
-        successful = results_df[results_df['success'] == True]
+                from tslib.core.arima import ARIMAProcess
+                from tslib.metrics.evaluation import ForecastMetrics
+            except ImportError:
+                import os
+                import sys
+
+                for path in sys.path:
+                    if os.path.exists(os.path.join(path, "tslib")):
+                        if path not in sys.path:
+                            sys.path.insert(0, path)
+                        break
+                from tslib.core.arima import ARIMAProcess
+                from tslib.metrics.evaluation import ForecastMetrics
+
+            rows_out: List[Dict[str, Any]] = []
+            for pdf in iterator:
+                for _, row in pdf.iterrows():
+                    wid = int(row["window_id"])
+                    pp, dd, qq = int(row["p"]), int(row["d"]), int(row["q"])
+                    train_data = np.asarray(row["train_data"], dtype=float)
+                    test_data = np.asarray(row["test_data"], dtype=float)
+                    ts_tr = int(row["train_size"])
+                    ts_te = int(row["test_size"])
+                    try:
+                        model = ARIMAProcess(
+                            ar_order=pp,
+                            diff_order=dd,
+                            ma_order=qq,
+                            trend="c",
+                            n_jobs=1,
+                        )
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            model.fit(train_data)
+                        params = model._fitted_params
+                        phi = [float(params["parameters"].get(f"phi_{i+1}", 0.0)) for i in range(pp)]
+                        theta = [float(params["parameters"].get(f"theta_{i+1}", 0.0)) for i in range(qq)]
+                        c = float(model.constant if hasattr(model, "constant") else 0.0)
+                        sigma2 = float(params["parameters"].get("sigma2", 0.0))
+                        test_size = len(test_data)
+                        predictions = model.predict(steps=test_size)
+                        mae = float(ForecastMetrics.mae(test_data, predictions))
+                        rmse = float(ForecastMetrics.rmse(test_data, predictions))
+                        mape = float(ForecastMetrics.mape(test_data, predictions))
+                        rows_out.append(
+                            {
+                                "window_id": wid,
+                                "p": pp,
+                                "d": dd,
+                                "q": qq,
+                                "success": True,
+                                "mae": mae,
+                                "rmse": rmse,
+                                "mape": mape,
+                                "phi": phi,
+                                "theta": theta,
+                                "c": c,
+                                "sigma2": sigma2,
+                                "train_size": ts_tr,
+                                "test_size": ts_te,
+                                "error": "",
+                            }
+                        )
+                    except Exception as e:
+                        rows_out.append(
+                            {
+                                "window_id": wid,
+                                "p": pp,
+                                "d": dd,
+                                "q": qq,
+                                "success": False,
+                                "mae": np.nan,
+                                "rmse": np.nan,
+                                "mape": np.nan,
+                                "phi": [],
+                                "theta": [],
+                                "c": np.nan,
+                                "sigma2": np.nan,
+                                "train_size": ts_tr,
+                                "test_size": ts_te,
+                                "error": str(e)[:500],
+                            }
+                        )
+            if rows_out:
+                yield pd.DataFrame(rows_out)
+
+        if self.verbose:
+            import time
+
+            print("  🚀 Backtesting en Spark (mapInPandas)...")
+            t0 = time.time()
+
+        results_spark = tasks_df.mapInPandas(backtest_map, schema=output_schema)
+        results_df = results_spark.toPandas()
+
+        if self.verbose:
+            import time
+
+            print(f"  ⏱️  Backtesting completado en {time.time() - t0:.2f}s")
+
+        if "success" in results_df.columns:
+            results_df["success"] = results_df["success"].astype(bool)
+        results_df = results_df.sort_values("window_id").reset_index(drop=True)
+
+        successful = results_df[results_df["success"]]
         if len(successful) > 0:
-            avg_mae = successful['mae'].mean()
-            avg_rmse = successful['rmse'].mean()
-            avg_mape = successful['mape'].mean()
-            
+            avg_mae = successful["mae"].mean()
+            avg_rmse = successful["rmse"].mean()
+            avg_mape = successful["mape"].mean()
             if self.verbose:
                 print(f"  ✓ Completed: {len(successful)}/{len(results_df)} windows")
                 print(f"  Average MAE: {avg_mae:.4f}")
@@ -1143,146 +1241,247 @@ class ParallelARIMAWorkflow:
         else:
             if self.verbose:
                 print("  ✗ All windows failed")
-        
-        # Store results
-        self.results_['step7_8_validation'] = {
-            'results_df': results_df,
-            'num_windows': len(windows),
-            'num_success': int(results_df['success'].sum()),
-            'metrics': {
-                'avg_mae': float(successful['mae'].mean()) if len(successful) > 0 else np.nan,
-                'avg_rmse': float(successful['rmse'].mean()) if len(successful) > 0 else np.nan,
-                'avg_mape': float(successful['mape'].mean()) if len(successful) > 0 else np.nan
-            }
+
+        self.results_["step7_8_validation"] = {
+            "results_df": results_df,
+            "num_windows": len(windows),
+            "num_success": int(results_df["success"].sum()) if "success" in results_df.columns else 0,
+            "metrics": {
+                "avg_mae": float(successful["mae"].mean()) if len(successful) > 0 else np.nan,
+                "avg_rmse": float(successful["rmse"].mean()) if len(successful) > 0 else np.nan,
+                "avg_mape": float(successful["mape"].mean()) if len(successful) > 0 else np.nan,
+            },
         }
-        
+
         return results_df
     
     # =========================================================================
     # STEP 9: Residual Diagnostics
     # =========================================================================
     
-    def _diagnose_residuals(self, 
-                           fixed_windows: List[Dict[str, Any]], 
-                           order: Tuple[int, int, int]) -> pd.DataFrame:
+    def _diagnose_residuals(
+        self,
+        fixed_windows: List[Dict[str, Any]],
+        order: Tuple[int, int, int],
+    ) -> pd.DataFrame:
         """
-        Perform residual diagnostics on each fixed window
-        
-        Analyzes residuals, performs ACF analysis, and Ljung-Box test.
-        
-        Parameters:
-        -----------
-        fixed_windows : list of dicts
-            Fixed windows
-        order : tuple
-            ARIMA order (p, d, q)
-            
-        Returns:
-        --------
-        diagnostics_df : pandas DataFrame
-            Diagnostic results for each window
+        Residual diagnostics per fixed window (Spark mapInPandas).
+
+        Analyzes residuals, ACF of residuals, and Ljung-Box test.
         """
         if self.verbose:
             print("\n" + "="*70)
-            print("STEP 9: Residual Diagnostics")
+            print("STEP 9: Residual Diagnostics (Spark)")
             print("="*70)
-        
+
         p, d, q = order
-        diagnostics = []
-        
+        sig_level = float(self._config["significance_level"])
+
+        if not fixed_windows:
+            diagnostics_df = pd.DataFrame(
+                columns=[
+                    "window_id", "p", "d", "q",
+                    "ljung_box_statistic", "ljung_box_p_value", "ljung_box_pass",
+                    "acf_significant_peaks", "acf_pass", "overall_pass",
+                    "residuals_mean", "residuals_std", "success", "error",
+                ]
+            )
+            self.results_["step9_diagnostics"] = {
+                "diagnostics_df": diagnostics_df,
+                "num_windows": 0,
+                "pass_rates": {"overall": 0.0, "ljung_box": 0.0, "acf": 0.0},
+            }
+            return diagnostics_df
+
+        tasks_list: List[Dict[str, Any]] = []
         for window in fixed_windows:
+            tasks_list.append(
+                {
+                    "window_id": int(window["window_id"]),
+                    "train_data": np.asarray(window["train_data"], dtype=float).tolist(),
+                    "p": p,
+                    "d": d,
+                    "q": q,
+                }
+            )
+
+        tasks_pandas = pd.DataFrame(tasks_list)
+        from pyspark.sql.types import (
+            StructType,
+            StructField,
+            IntegerType,
+            DoubleType,
+            StringType,
+            BooleanType,
+            ArrayType,
+        )
+
+        schema_in = StructType(
+            [
+                StructField("window_id", IntegerType(), True),
+                StructField("train_data", ArrayType(DoubleType()), True),
+                StructField("p", IntegerType(), True),
+                StructField("d", IntegerType(), True),
+                StructField("q", IntegerType(), True),
+            ]
+        )
+        tasks_df = self.spark.createDataFrame(tasks_pandas, schema=schema_in)
+        npart = max(1, min(len(tasks_pandas), self.spark.sparkContext.defaultParallelism))
+        tasks_df = tasks_df.repartition(npart)
+
+        output_schema = StructType(
+            [
+                StructField("window_id", IntegerType(), True),
+                StructField("p", IntegerType(), True),
+                StructField("d", IntegerType(), True),
+                StructField("q", IntegerType(), True),
+                StructField("ljung_box_statistic", DoubleType(), True),
+                StructField("ljung_box_p_value", DoubleType(), True),
+                StructField("ljung_box_pass", BooleanType(), True),
+                StructField("acf_significant_peaks", IntegerType(), True),
+                StructField("acf_pass", BooleanType(), True),
+                StructField("overall_pass", BooleanType(), True),
+                StructField("residuals_mean", DoubleType(), True),
+                StructField("residuals_std", DoubleType(), True),
+                StructField("success", BooleanType(), True),
+                StructField("error", StringType(), True),
+            ]
+        )
+
+        def diagnose_map(iterator):
+            import warnings
+
+            import numpy as np
+            import pandas as pd
+
             try:
-                # Fit model
-                model = ARIMAProcess(
-                    ar_order=p,
-                    diff_order=d,
-                    ma_order=q,
-                    trend='c',
-                    n_jobs=1
-                )
-                
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    model.fit(window['train_data'])
-                
-                # Get residuals
-                residuals = model.get_residuals()
-                fitted_values = model.get_fitted_values()
-                
-                # Perform residual analysis
-                residual_analysis = self._residual_analyzer.analyze(residuals, fitted_values)
-                
-                # Check for significant ACF peaks
-                acf_test = residual_analysis['autocorrelation_tests']
-                ljung_box = residual_analysis['ljung_box_test']
-                
-                # Determine if diagnostics pass
-                ljung_box_pass = ljung_box['p_value'] > self._config['significance_level']
-                
-                # Check ACF for significant peaks
-                acf_autocorrs = acf_test['autocorrelations']
-                n = len(residuals)
-                conf_bound = 1.96 / np.sqrt(n)
-                significant_acf_peaks = sum([1 for ac in acf_autocorrs if abs(ac) > conf_bound])
-                acf_pass = significant_acf_peaks <= 2  # Allow up to 2 peaks
-                
-                diagnostics.append({
-                    'window_id': window['window_id'],
-                    'p': p, 'd': d, 'q': q,
-                    'ljung_box_statistic': ljung_box['statistic'],
-                    'ljung_box_p_value': ljung_box['p_value'],
-                    'ljung_box_pass': ljung_box_pass,
-                    'acf_significant_peaks': significant_acf_peaks,
-                    'acf_pass': acf_pass,
-                    'overall_pass': ljung_box_pass and acf_pass,
-                    'residuals_mean': float(residual_analysis['basic_stats']['mean']),
-                    'residuals_std': float(residual_analysis['basic_stats']['std']),
-                    'success': True,
-                    'error': None
-                })
-                
-            except Exception as e:
-                diagnostics.append({
-                    'window_id': window['window_id'],
-                    'p': p, 'd': d, 'q': q,
-                    'ljung_box_statistic': np.nan,
-                    'ljung_box_p_value': np.nan,
-                    'ljung_box_pass': False,
-                    'acf_significant_peaks': np.nan,
-                    'acf_pass': False,
-                    'overall_pass': False,
-                    'residuals_mean': np.nan,
-                    'residuals_std': np.nan,
-                    'success': False,
-                    'error': str(e)
-                })
-        
-        diagnostics_df = pd.DataFrame(diagnostics)
-        
-        # Calculate pass rate
-        successful = diagnostics_df[diagnostics_df['success'] == True]
+                from tslib.core.arima import ARIMAProcess
+                from tslib.metrics.evaluation import ResidualAnalyzer
+            except ImportError:
+                import os
+                import sys
+
+                for path in sys.path:
+                    if os.path.exists(os.path.join(path, "tslib")):
+                        if path not in sys.path:
+                            sys.path.insert(0, path)
+                        break
+                from tslib.core.arima import ARIMAProcess
+                from tslib.metrics.evaluation import ResidualAnalyzer
+
+            rows_out: List[Dict[str, Any]] = []
+            for pdf in iterator:
+                for _, row in pdf.iterrows():
+                    wid = int(row["window_id"])
+                    pp, dd, qq = int(row["p"]), int(row["d"]), int(row["q"])
+                    train_data = np.asarray(row["train_data"], dtype=float)
+                    try:
+                        model = ARIMAProcess(
+                            ar_order=pp,
+                            diff_order=dd,
+                            ma_order=qq,
+                            trend="c",
+                            n_jobs=1,
+                        )
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            model.fit(train_data)
+                        residuals = model.get_residuals()
+                        fitted_values = model.get_fitted_values()
+                        analyzer = ResidualAnalyzer()
+                        residual_analysis = analyzer.analyze(residuals, fitted_values)
+                        acf_test = residual_analysis["autocorrelation_tests"]
+                        ljung_box = residual_analysis["ljung_box_test"]
+                        ljung_box_pass = float(ljung_box["p_value"]) > sig_level
+                        acf_autocorrs = acf_test["autocorrelations"]
+                        n = len(residuals)
+                        conf_bound = 1.96 / np.sqrt(max(n, 1))
+                        significant_acf_peaks = sum(
+                            1 for ac in acf_autocorrs if abs(ac) > conf_bound
+                        )
+                        acf_pass = significant_acf_peaks <= 2
+                        rows_out.append(
+                            {
+                                "window_id": wid,
+                                "p": pp,
+                                "d": dd,
+                                "q": qq,
+                                "ljung_box_statistic": float(ljung_box["statistic"]),
+                                "ljung_box_p_value": float(ljung_box["p_value"]),
+                                "ljung_box_pass": bool(ljung_box_pass),
+                                "acf_significant_peaks": int(significant_acf_peaks),
+                                "acf_pass": bool(acf_pass),
+                                "overall_pass": bool(ljung_box_pass and acf_pass),
+                                "residuals_mean": float(residual_analysis["basic_stats"]["mean"]),
+                                "residuals_std": float(residual_analysis["basic_stats"]["std"]),
+                                "success": True,
+                                "error": "",
+                            }
+                        )
+                    except Exception as e:
+                        rows_out.append(
+                            {
+                                "window_id": wid,
+                                "p": pp,
+                                "d": dd,
+                                "q": qq,
+                                "ljung_box_statistic": np.nan,
+                                "ljung_box_p_value": np.nan,
+                                "ljung_box_pass": False,
+                                "acf_significant_peaks": -1,
+                                "acf_pass": False,
+                                "overall_pass": False,
+                                "residuals_mean": np.nan,
+                                "residuals_std": np.nan,
+                                "success": False,
+                                "error": str(e)[:500],
+                            }
+                        )
+            if rows_out:
+                yield pd.DataFrame(rows_out)
+
+        if self.verbose:
+            import time
+
+            print("  🚀 Diagnóstico de residuos en Spark (mapInPandas)...")
+            t0 = time.time()
+
+        diagnostics_df = tasks_df.mapInPandas(diagnose_map, schema=output_schema).toPandas()
+
+        if self.verbose:
+            import time
+
+            print(f"  ⏱️  Diagnóstico completado en {time.time() - t0:.2f}s")
+
+        for col in ("success", "ljung_box_pass", "acf_pass", "overall_pass"):
+            if col in diagnostics_df.columns:
+                diagnostics_df[col] = diagnostics_df[col].astype(bool)
+        diagnostics_df = diagnostics_df.sort_values("window_id").reset_index(drop=True)
+
+        overall_pass_rate = 0.0
+        ljung_box_pass_rate = 0.0
+        acf_pass_rate = 0.0
+        successful = diagnostics_df[diagnostics_df["success"]]
         if len(successful) > 0:
-            overall_pass_rate = successful['overall_pass'].sum() / len(successful)
-            ljung_box_pass_rate = successful['ljung_box_pass'].sum() / len(successful)
-            acf_pass_rate = successful['acf_pass'].sum() / len(successful)
-            
+            overall_pass_rate = successful["overall_pass"].sum() / len(successful)
+            ljung_box_pass_rate = successful["ljung_box_pass"].sum() / len(successful)
+            acf_pass_rate = successful["acf_pass"].sum() / len(successful)
             if self.verbose:
                 print(f"  ✓ Completed: {len(successful)}/{len(diagnostics_df)} windows")
                 print(f"  Overall pass rate: {overall_pass_rate*100:.1f}%")
                 print(f"  Ljung-Box pass rate: {ljung_box_pass_rate*100:.1f}%")
                 print(f"  ACF pass rate: {acf_pass_rate*100:.1f}%")
-        
-        # Store results
-        self.results_['step9_diagnostics'] = {
-            'diagnostics_df': diagnostics_df,
-            'num_windows': len(fixed_windows),
-            'pass_rates': {
-                'overall': float(overall_pass_rate) if len(successful) > 0 else 0.0,
-                'ljung_box': float(ljung_box_pass_rate) if len(successful) > 0 else 0.0,
-                'acf': float(acf_pass_rate) if len(successful) > 0 else 0.0
-            }
+
+        self.results_["step9_diagnostics"] = {
+            "diagnostics_df": diagnostics_df,
+            "num_windows": len(fixed_windows),
+            "pass_rates": {
+                "overall": float(overall_pass_rate),
+                "ljung_box": float(ljung_box_pass_rate),
+                "acf": float(acf_pass_rate),
+            },
         }
-        
+
         return diagnostics_df
     
     # =========================================================================
@@ -1472,14 +1671,15 @@ class ParallelARIMAWorkflow:
         n = len(data)
         
         if self.verbose:
+            _sc = self.spark.sparkContext
             print("\n" + "="*70)
             print("PARALLEL ARIMA WORKFLOW - STARTING")
             print("="*70)
             print(f"Data: {n} observations")
             print(f"🔧 Spark Config:")
-            print(f"   Master: {sc.master}")
-            print(f"   Cores: {sc.defaultParallelism}")
-            print(f"   App: {sc.appName}")
+            print(f"   Master: {_sc.master}")
+            print(f"   Cores: {_sc.defaultParallelism}")
+            print(f"   App: {_sc.appName}")
         
         # STEP 1: Determine differencing order
         d, log_needed, transformer = self._determine_differencing_order(data)

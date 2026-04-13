@@ -1,7 +1,8 @@
 # Time Series Project — monorepo orchestration
 # Delegates to time-series-library (TSLib) and tslib-shiny-app (UI).
 
-.PHONY: help install-lib install-lib-spark test-lib install-ui run-ui sampler check-java
+# Two venvs: time-series-library/venv (lib tests) and tslib-shiny-app/venv (UI + editable TSLib).
+.PHONY: help install-lib install-lib-spark test-lib install-ui install-all run-ui up sampler check-java
 
 help:
 	@echo "Time Series Project (monorepo)"
@@ -10,6 +11,8 @@ help:
 	@echo "Prerequisites: Python 3.9+, Java 17+ for PySpark / Spark paths in TSLib."
 	@echo ""
 	@echo "Targets:"
+	@echo "  install-all       - install-lib + install-ui (both venvs; see Makefile header)"
+	@echo "  up                - install-all then run-ui (blocks until Ctrl+C)"
 	@echo "  install-lib       - TSLib dev install (venv inside time-series-library/)"
 	@echo "  install-lib-spark - TSLib + PySpark (requires Java 17+ on PATH)"
 	@echo "  test-lib          - Run TSLib test suite"
@@ -18,6 +21,12 @@ help:
 	@echo "  sampler           - Regenerate CSV datasets under sampler/datasets/"
 	@echo "  check-java        - Verify Java 17+ (from UI Makefile)"
 	@echo ""
+
+install-all: install-lib install-ui
+	@echo ""
+	@echo "install-all: listo. Venv librería: time-series-library/venv | Venv UI: tslib-shiny-app/venv"
+
+up: install-all run-ui
 
 install-lib:
 	$(MAKE) -C time-series-library install-dev
