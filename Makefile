@@ -35,7 +35,11 @@ run-ui:
 	$(MAKE) -C tslib-shiny-app run
 
 sampler:
-	python3 sampler/generate_datasets.py
+	@if [ -x time-series-library/venv/bin/python ]; then \
+		time-series-library/venv/bin/python sampler/generate_datasets.py; \
+	else \
+		python3 sampler/generate_datasets.py; \
+	fi
 
 check-java:
 	$(MAKE) -C tslib-shiny-app check-java

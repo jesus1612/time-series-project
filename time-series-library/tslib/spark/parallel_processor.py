@@ -18,7 +18,7 @@ Usage example (requires PySpark)::
     )
 """
 
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 try:
@@ -224,13 +224,13 @@ class GenericParallelProcessor:
         _n_jobs     = self.n_jobs
         _value_col  = value_col
 
-        def _apply_groups(iterator: Iterator[pd.DataFrame]) -> Iterable[pd.DataFrame]:
-            for pdf in iterator:
-                yield _fit_predict_group(
-                    pdf, _value_col, _model_type, _order, _steps, _n_jobs
-                )
+        # PySpark 4+ expects (pdf: DataFrame) -> DataFrame per group, not a generator.
+        def _apply_group(pdf: "pd.DataFrame") -> "pd.DataFrame":
+            return _fit_predict_group(
+                pdf, _value_col, _model_type, _order, _steps, _n_jobs
+            )
 
-        result = working_df.groupBy('_group_id').applyInPandas(_apply_groups, schema=output_schema)
+        result = working_df.groupBy('_group_id').applyInPandas(_apply_group, schema=output_schema)
         return result
 
     def fit_and_collect(
@@ -263,7 +263,9 @@ class GenericParallelProcessor:
         n_jobs: int = 1,
     ) -> Dict[str, Dict]:
         """
-        Sequential fallback disabled by Spark-only policy.
+        Sequential fallback without Spark: fit each series locally in the driver.
+
+        Used for tests, benchmarks (timing vs Spark), and environments without a cluster.
 
         Parameters
         ----------
@@ -283,7 +285,27 @@ class GenericParallelProcessor:
         dict
             Mapping of series_id → {'forecast': array, 'status': str}
         """
-        raise RuntimeError(
-            "fit_multiple_sequential está deshabilitado por política Spark-only. "
-            "Usa GenericParallelProcessor.fit_multiple con un SparkSession activo."
-        )
+        import warnings
+
+        model_type_u = model_type.upper()
+        if model_type_u not in _MODEL_REGISTRY:
+            raise ValueError(
+                f"Unsupported model_type='{model_type}'. "
+                f"Choose from: {list(_MODEL_REGISTRY)}"
+            )
+
+        out: Dict[str, Dict] = {}
+        for sid, y in series_dict.items():
+            try:
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")
+                    model = _build_model(model_type_u, order, n_jobs=n_jobs)
+                    model.fit(np.asarray(y, dtype=float))
+                    fc = model.predict(steps=steps)
+                out[sid] = {"forecast": fc, "status": "ok"}
+            except Exception as exc:
+                out[sid] = {
+                    "forecast": np.full(steps, np.nan),
+                    "status": str(exc)[:200],
+                }
+        return out

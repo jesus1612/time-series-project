@@ -74,7 +74,7 @@ make sampler
 # o: python3 sampler/generate_datasets.py
 ```
 
-Requiere `numpy` y `pandas`; `statsmodels` opcional para algunos datasets clásicos. Detalles: [`sampler/README.md`](sampler/README.md).
+Si existe `time-series-library/venv` (p. ej. tras `make install-lib`), el objetivo `make sampler` usa ese intérprete; si no, usa `python3` del sistema (debe tener `numpy` y `pandas`). `statsmodels` es opcional para algunos datasets clásicos. Detalles: [`sampler/README.md`](sampler/README.md).
 
 ### Diagramas
 
