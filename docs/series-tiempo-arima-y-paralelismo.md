@@ -130,7 +130,27 @@ El diagrama describe bien el **reparto de trabajo pesado** (muchas estimaciones 
 
 ---
 
-## 5. Referencias de código
+## 5. Pestaña «Series temporales paralelas» (Shiny): dónde está cada cosa
+
+Código de la vista: [`tslib-shiny-app/features/benchmark/ui.py`](../tslib-shiny-app/features/benchmark/ui.py), servidor: [`server.py`](../tslib-shiny-app/features/benchmark/server.py), figuras y métricas: [`arima_benchmark.py`](../tslib-shiny-app/features/benchmark/arima_benchmark.py).
+
+Tras pulsar **Generar benchmark**, aparecen en orden:
+
+| Orden | Qué es | Cómo interpretarlo |
+|-------|--------|-------------------|
+| 1 | **Tiempos de ajuste** (eje Y log) | Tiempo de *fit* frente a \(n\) en serie sintética. Cuatro curvas: TSLib lineal, **ParallelARIMAWorkflow**, Spark+statsmodels, statsmodels local. Escala log en Y para que una curva muy lenta no aplaste el resto. |
+| 2 | **Speedup** | Cociente \(t_{\text{TSLib lineal}} / t_{\text{otro}}\). Por encima de 1, la otra ruta es más rápida que TSLib lineal en ese \(n\). Línea horizontal de referencia en 1×. |
+| 3 | **Barras RMSE / MAE / MAPE** | Un número por método en el hold-out del CSV elegido (misma partición train/test). Compara el error global del tramo de prueba; no es por paso. |
+| 4 | **ACF, PACF, residuos, Q-Q** | Diagnóstico sobre la **porción de entrenamiento** con ARIMA lineal TSLib (orden fijo del benchmark). Sirve para ver estructura residual, no para comparar Spark frente a statsmodels. |
+| 5 | **\|error\| por horizonte** | Para cada paso \(h=1,\ldots,H\) fuera de muestra, \(\|y_{T+h} - \hat y_{T+h}\|\). Se dibujan **líneas** (no solo dos barras): **ParallelARIMAWorkflow** en línea más gruesa, más TSLib lineal, statsmodels ref. y, si Spark responde, Spark+statsmodels. Así el gráfico centra la lectura en **tu pipeline paralelo** frente a referencias; antes solo comparaba dos rutas “locales” y por eso resultaba confuso. Si falta Spark, solo se muestran las rutas que se pudieron calcular. |
+| 6 | **Secuencial vs n_jobs en ARIMAModel** | Contrasta `n_jobs=1` y `n_jobs=-1` en el **mismo** `ARIMAModel` de TSLib (paralelismo interno del ajuste). **No** es el mismo objeto que `ParallelARIMAWorkflow` (sección 1–5). |
+| Texto | **Resumen** | Cruces \(N^\*\) donde el speedup respecto a TSLib lineal llega a ≥ 1, más métricas hold-out por método. El bloque usa estilos claros sobre fondo oscuro (clase `bench-summary-pre`). |
+
+**Nota:** Si en Spark aparece un error tipo sesión inválida (`'NoneType' object has no attribute 'sc'`), la sesión se descarta y las rutas que dependen de Spark quedan como error o ausentes hasta reiniciar JVM/Spark de forma estable.
+
+---
+
+## 6. Referencias de código
 
 | Tema | Ruta |
 |------|------|
@@ -142,7 +162,7 @@ El diagrama describe bien el **reparto de trabajo pesado** (muchas estimaciones 
 
 ---
 
-## 6. Puesta en marcha rápida del monorepo
+## 7. Puesta en marcha rápida del monorepo
 
 Desde la raíz del repositorio:
 

@@ -6,7 +6,7 @@ import io as _io
 import traceback
 
 import matplotlib.pyplot as plt
-from shiny import reactive, render, ui
+from shiny import reactive, render, req, ui
 
 try:
     from .runner import BenchmarkRunner
@@ -18,6 +18,11 @@ except ImportError:
 try:
     from .arima_benchmark import (
         ARIMABenchmarkSuite,
+        COLOR_NEUTRAL,
+        COLOR_SM_REF,
+        COLOR_SPARK_SM,
+        COLOR_TSLIB,
+        COLOR_WORKFLOW,
         LABEL_PARALLEL_WORKFLOW,
         LABEL_SPARK_STATSMODELS,
         LABEL_STATSMODELS_LOCAL,
@@ -30,8 +35,13 @@ except ImportError:
     ARIMABenchmarkSuite = None  # type: ignore
     LABEL_TSLIB_LINEAR = "TSLib lineal"
     LABEL_PARALLEL_WORKFLOW = "ParallelARIMAWorkflow"
-    LABEL_SPARK_STATSMODELS = "Spark+statsmodels"
-    LABEL_STATSMODELS_LOCAL = "statsmodels local"
+    LABEL_SPARK_STATSMODELS = "Spark · statsmodels"
+    LABEL_STATSMODELS_LOCAL = "statsmodels ref."
+    COLOR_TSLIB = "#E07A5F"
+    COLOR_WORKFLOW = "#2A9D8F"
+    COLOR_SPARK_SM = "#457B9D"
+    COLOR_SM_REF = "#E9C46A"
+    COLOR_NEUTRAL = "#94A3B8"
 
 _METRIC_SUMMARY_LABELS = {
     "tslib_linear": LABEL_TSLIB_LINEAR,
@@ -41,8 +51,19 @@ _METRIC_SUMMARY_LABELS = {
 }
 
 
+def _fmt_crossover(v):
+    return "—" if v is None else str(v)
+
+
 def register_benchmark_server(input, output, session, app_state):
     """Register unified benchmark server."""
+
+    def _chart_block(title: str, plot_id: str, height: str):
+        return ui.div(
+            ui.tags.h6(title, class_="bench-section-title"),
+            ui.output_plot(plot_id, height=height),
+            class_="bench-chart-card",
+        )
 
     @output
     @render.ui
@@ -50,25 +71,68 @@ def register_benchmark_server(input, output, session, app_state):
         st = app_state.get().get("fb_status", "idle")
         if st == "running":
             return ui.div(
-                ui.tags.div(class_="spinner-border text-primary", role="status"),
-                ui.tags.span(
-                    " Generando informe (Spark + TSLib + statsmodels)… puede tardar varios minutos.",
-                    class_="ms-2",
-                ),
-                class_="mt-3",
+                ui.tags.div(class_="spinner-border spinner-border-sm text-primary", role="status"),
+                ui.tags.span(" Ejecutando…", class_="ms-2 text-secondary small"),
+                class_="d-flex align-items-center justify-content-center py-2",
             )
         if st == "error":
-            err = app_state.get().get("fb_error") or ""
-            return ui.div(ui.tags.p(f"Error: {err}", class_="text-danger mt-2 small"))
-        if st == "done":
+            err = (app_state.get().get("fb_error") or "")[:1200]
             return ui.div(
-                ui.tags.p("Listo. Revisa las secciones numeradas abajo.", class_="text-success mt-2"),
+                ui.tags.p("No se completó el benchmark.", class_="text-warning small mb-1"),
+                ui.tags.pre(err, class_="bench-error-pre small"),
+                class_="mt-2",
             )
+        return ui.div()
+
+    @output
+    @render.ui
+    def fb_results_panel():
+        st = app_state.get().get("fb_status", "idle")
+        placeholder = None
+        if st == "idle":
+            placeholder = ui.div(
+                ui.tags.p(
+                    "Los gráficos aparecerán aquí tras generar el benchmark.",
+                    class_="bench-placeholder-text",
+                ),
+                class_="bench-placeholder card",
+            )
+        elif st == "running":
+            placeholder = ui.div(
+                ui.tags.div(class_="spinner-border text-primary mb-2", role="status"),
+                ui.tags.p(
+                    "Calculando tiempos, métricas y figuras. Puede tardar varios minutos.",
+                    class_="text-secondary small mb-0",
+                ),
+                class_="bench-running card text-center py-5",
+            )
+
+        show = st == "done"
+        disp = "block" if show else "none"
+        chart_stack = ui.div(
+            {
+                "class": "bench-charts-stack",
+                "style": f"display: {disp};",
+            },
+            _chart_block("Tiempos de ajuste", "fb_perf_time_plot", "440px"),
+            _chart_block("Speedup frente a TSLib lineal", "fb_perf_speedup_plot", "400px"),
+            _chart_block("Errores en holdout", "fb_acc_plot", "380px"),
+            _chart_block("ACF, PACF, residuos y Q-Q", "fb_diag_plot", "500px"),
+            _chart_block("|Error| por horizonte — ParallelARIMAWorkflow vs referencias", "fb_horizon_plot", "400px"),
+            ui.div(
+                ui.tags.p(
+                    "Paralelismo n_jobs en ARIMAModel; distinto del pipeline ParallelARIMAWorkflow arriba.",
+                    class_="bench-hint small text-muted mb-2",
+                ),
+                _chart_block("Secuencial vs paralelo interno", "fb_elbow_plot", "880px"),
+                class_="bench-njobs-block",
+            ),
+        )
+
         return ui.div(
-            ui.tags.p(
-                "Pulsa el botón para generar todo el benchmark.",
-                class_="text-muted small mt-2",
-            )
+            {"class": "bench-results-root mt-3"},
+            placeholder,
+            chart_stack,
         )
 
     @reactive.Effect
@@ -103,8 +167,7 @@ def register_benchmark_server(input, output, session, app_state):
 
         try:
             suite = ARIMABenchmarkSuite()
-            buf = _io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(_io.StringIO()):
                 perf = suite.run_performance_benchmark(
                     n_obs_grid=n_grid or None,
                     repeats=max(1, repeats),
@@ -124,6 +187,7 @@ def register_benchmark_server(input, output, session, app_state):
             train_y = None
             try:
                 import pandas as pd
+
                 from .arima_benchmark import default_sampler_datasets_dir
 
                 p = default_sampler_datasets_dir() / csv_name
@@ -150,7 +214,7 @@ def register_benchmark_server(input, output, session, app_state):
                 fig_d = suite.build_exploratory_diagnostics_figure(train_y, (1, 1, 1))
             else:
                 fig_d, ax = plt.subplots(figsize=(5, 2))
-                ax.text(0.5, 0.5, "No se pudo cargar serie train para ACF/PACF", ha="center")
+                ax.text(0.5, 0.5, "No se pudo cargar la serie de entrenamiento", ha="center")
                 ax.axis("off")
 
             fig_h = suite.build_error_by_horizon_figure(csv_name, (1, 1, 1), 0.2)
@@ -159,20 +223,34 @@ def register_benchmark_server(input, output, session, app_state):
                 ax.text(0.5, 0.5, "Error por horizonte no disponible", ha="center")
                 ax.axis("off")
 
-            elbow_fig = None
             if nj_grid:
                 runner = BenchmarkRunner(n_obs_grid=nj_grid, repeats=max(1, nj_repeats), seed=42)
                 with contextlib.redirect_stdout(_io.StringIO()):
                     runner.run()
                 elbow_fig = _create_elbow_plot(runner)
+            else:
+                fig_e, ax_e = plt.subplots(figsize=(6, 2.2))
+                fig_e.patch.set_facecolor("#1a1a1a")
+                ax_e.set_facecolor("#262626")
+                ax_e.text(
+                    0.5,
+                    0.5,
+                    "Indica un grid n_jobs para esta sección.",
+                    ha="center",
+                    va="center",
+                    color="#94a3b8",
+                    fontsize=11,
+                )
+                ax_e.axis("off")
+                elbow_fig = fig_e
 
             lines = [
-                "--- Resumen ARIMA (orden fijo 1,1,1 en benchmark) ---",
-                f"N* speedup≥1 (lineal vs {LABEL_PARALLEL_WORKFLOW}): {perf.get('crossover_workflow')}",
-                f"N* speedup≥1 (lineal vs {LABEL_SPARK_STATSMODELS}): {perf.get('crossover_spark_sm')}",
-                f"N* speedup≥1 (lineal vs {LABEL_STATSMODELS_LOCAL}): {perf.get('crossover_statsmodels_local')}",
+                "ARIMA fijo (1,1,1)",
+                f"N mín. con speedup ≥ 1 · {LABEL_PARALLEL_WORKFLOW}: {_fmt_crossover(perf.get('crossover_workflow'))}",
+                f"N mín. con speedup ≥ 1 · {LABEL_SPARK_STATSMODELS}: {_fmt_crossover(perf.get('crossover_spark_sm'))}",
+                f"N mín. con speedup ≥ 1 · {LABEL_STATSMODELS_LOCAL}: {_fmt_crossover(perf.get('crossover_statsmodels_local'))}",
                 "",
-                "Métricas holdout:",
+                "Holdout",
             ]
             for key, block in (acc.get("metrics") or {}).items():
                 label = _METRIC_SUMMARY_LABELS.get(key, key)
@@ -180,12 +258,11 @@ def register_benchmark_server(input, output, session, app_state):
                     lines.append(f"  {label}: {block.get('error')}")
                 else:
                     lines.append(
-                        f"  {label}: RMSE={block.get('rmse'):.4f} MAE={block.get('mae'):.4f} "
-                        f"MAPE={block.get('mape'):.2f}%"
+                        f"  {label}: RMSE {block.get('rmse'):.4f} · MAE {block.get('mae'):.4f} · "
+                        f"MAPE {block.get('mape'):.2f}%"
                     )
-            if elbow_fig is not None:
-                lines.append("")
-                lines.append("Benchmark n_jobs: ver gráfico sección 6 (codo por modelo).")
+            if nj_grid:
+                lines.extend(["", "Sección n_jobs: ver gráfico anterior."])
 
             st2 = app_state.get().copy()
             st2["fb_status"] = "done"
@@ -204,59 +281,60 @@ def register_benchmark_server(input, output, session, app_state):
             st2["fb_error"] = f"{e}\n{traceback.format_exc()}"
             app_state.set(st2)
 
-    def _empty(msg: str):
-        fig, ax = plt.subplots(figsize=(4, 2))
-        ax.text(0.5, 0.5, msg, ha="center", va="center", color="gray")
-        ax.axis("off")
-        return fig
-
     @output
     @render.plot
     def fb_perf_time_plot():
-        fig = app_state.get().get("fb_perf_time_fig")
-        return fig if fig is not None else _empty("Ejecuta el benchmark")
+        req(app_state.get().get("fb_status") == "done")
+        return app_state.get().get("fb_perf_time_fig")
 
     @output
     @render.plot
     def fb_perf_speedup_plot():
-        fig = app_state.get().get("fb_perf_speedup_fig")
-        return fig if fig is not None else _empty("Ejecuta el benchmark")
+        req(app_state.get().get("fb_status") == "done")
+        return app_state.get().get("fb_perf_speedup_fig")
 
     @output
     @render.plot
     def fb_acc_plot():
-        fig = app_state.get().get("fb_acc_fig")
-        return fig if fig is not None else _empty("Ejecuta el benchmark")
+        req(app_state.get().get("fb_status") == "done")
+        return app_state.get().get("fb_acc_fig")
 
     @output
     @render.plot
     def fb_diag_plot():
-        fig = app_state.get().get("fb_diag_fig")
-        return fig if fig is not None else _empty("Ejecuta el benchmark")
+        req(app_state.get().get("fb_status") == "done")
+        return app_state.get().get("fb_diag_fig")
 
     @output
     @render.plot
     def fb_horizon_plot():
-        fig = app_state.get().get("fb_horizon_fig")
-        return fig if fig is not None else _empty("Ejecuta el benchmark")
+        req(app_state.get().get("fb_status") == "done")
+        return app_state.get().get("fb_horizon_fig")
 
     @output
     @render.plot
     def fb_elbow_plot():
-        fig = app_state.get().get("fb_elbow_fig")
-        return fig if fig is not None else _empty("Sin datos n_jobs (configura grid)")
+        req(app_state.get().get("fb_status") == "done")
+        return app_state.get().get("fb_elbow_fig")
 
     @output
     @render.ui
     def fb_summary_ui():
+        st = app_state.get().get("fb_status", "idle")
+        if st != "done":
+            return ui.div()
         txt = app_state.get().get("fb_summary_text")
         if not txt:
             return ui.div()
-        return ui.div(ui.tags.pre(txt, class_="small bench-summary-pre"), class_="mt-3")
+        return ui.div(
+            ui.tags.h6("Resumen textual", class_="bench-section-title"),
+            ui.tags.pre(txt, class_="bench-summary-pre"),
+            class_="bench-summary-wrap",
+        )
 
 
 def _create_elbow_plot(runner):
-    """Secuencial vs paralelo n_jobs: one row per model, legend below axes."""
+    """Sequential vs parallel n_jobs: one row per model, legend below axes."""
     n_models = len(runner.models)
     fig, axes = plt.subplots(n_models, 2, figsize=(14, 4.2 * n_models), squeeze=False)
     speedups = runner.speedups()
@@ -272,23 +350,23 @@ def _create_elbow_plot(runner):
             n_obs,
             t_seq,
             "o-",
-            color="#ff6b6b",
-            label="Secuencial (n_jobs=1)",
+            color=COLOR_TSLIB,
+            label="Secuencial n_jobs=1",
             linewidth=2,
         )
         ax_time.plot(
             n_obs,
             t_par,
             "s-",
-            color="#10ac84",
-            label="Paralelo (n_jobs=-1)",
+            color=COLOR_WORKFLOW,
+            label="Paralelo n_jobs=-1",
             linewidth=2,
         )
         ax_time.set_xlabel("n_obs", fontsize=10)
         ax_time.set_ylabel("Tiempo (s)", fontsize=10)
         ax_time.set_xscale("log")
         ax_time.set_yscale("log")
-        ax_time.set_title(f"{model_name} — tiempo de ajuste", fontsize=11, color="white", pad=8)
+        ax_time.set_title(f"{model_name} — tiempo", fontsize=11, color="white", pad=8)
         ax_time.grid(True, alpha=0.2, linestyle=":")
         ax_time.legend(
             fontsize=8,
@@ -301,17 +379,17 @@ def _create_elbow_plot(runner):
         )
 
         s_vals = [speedups[model_name][n] for n in n_obs]
-        ax_sp.plot(n_obs, s_vals, "o-", color="#54a0ff", label="Speedup", linewidth=2)
-        ax_sp.axhline(y=1.0, color="#8395a7", linestyle="--", alpha=0.6, label="Equilibrio (1x)")
-        ax_sp.axhline(y=1.1, color="#ff9f43", linestyle=":", linewidth=2, label="Umbral (1.1x)")
+        ax_sp.plot(n_obs, s_vals, "o-", color=COLOR_SPARK_SM, label="Speedup", linewidth=2)
+        ax_sp.axhline(y=1.0, color=COLOR_NEUTRAL, linestyle="--", alpha=0.6, label="1×")
+        ax_sp.axhline(y=1.1, color=COLOR_SM_REF, linestyle=":", linewidth=2, label="Umbral 1.1×")
         elbow = runner.elbow_threshold()[model_name]
         if elbow is not None and len(s_vals):
-            ax_sp.axvline(x=elbow, color="#c8b68a", alpha=0.25, linewidth=10, zorder=0)
+            ax_sp.axvline(x=elbow, color="#6b5b4f", alpha=0.35, linewidth=10, zorder=0)
             ax_sp.text(
                 elbow,
                 max(s_vals) * 0.85,
                 " codo",
-                color="#c8b68a",
+                color="#c4b5a0",
                 fontsize=9,
             )
         ax_sp.set_xlabel("n_obs", fontsize=10)
