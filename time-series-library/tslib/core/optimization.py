@@ -377,7 +377,14 @@ class MLEOptimizer(BaseEstimator):
         
         # Calculate log-likelihood
         # Assuming Gaussian errors: log L = -n/2 * log(2π) - n/2 * log(σ²) - 1/(2σ²) * Σε²
-        log_likelihood = -n/2 * np.log(2 * np.pi) - n/2 * np.log(sigma2) - np.sum(residuals**2) / (2 * sigma2)
+        # Floor sigma2 and clip residual squares to avoid overflow during MLE line search
+        sigma2_safe = max(float(sigma2), 1e-300)
+        rss = np.sum(np.minimum(residuals.astype(float) ** 2, 1e300))
+        log_likelihood = (
+            -n / 2 * np.log(2 * np.pi)
+            - n / 2 * np.log(sigma2_safe)
+            - rss / (2 * sigma2_safe)
+        )
         
         return log_likelihood
     
@@ -425,9 +432,10 @@ class MLEOptimizer(BaseEstimator):
             for i in range(q):
                 if t - i - 1 >= 0:
                     predicted += ma_params[i] * residuals[t - i - 1]
-            
+            predicted = float(np.clip(predicted, -1e12, 1e12))
+
             # Calculate residual
-            residuals[t] = data[t] - predicted
+            residuals[t] = float(np.clip(data[t] - predicted, -1e12, 1e12))
         
         return residuals
     

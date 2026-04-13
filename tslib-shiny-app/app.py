@@ -849,6 +849,16 @@ def server(input, output, session):
         "arima_bench_perf_fig": None,
         "arima_bench_acc_fig": None,
         "arima_bench_summary": None,
+        # Unified benchmark tab (fb_*)
+        "fb_status": "idle",
+        "fb_error": None,
+        "fb_perf_time_fig": None,
+        "fb_perf_speedup_fig": None,
+        "fb_acc_fig": None,
+        "fb_diag_fig": None,
+        "fb_horizon_fig": None,
+        "fb_elbow_fig": None,
+        "fb_summary_text": None,
     })
     uploaded_dataframe = reactive.Value(None)
     
