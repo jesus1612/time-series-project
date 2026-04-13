@@ -1,0 +1,283 @@
+================================================================================
+TSLib — Inventario de capacidades y plan de trabajo (paso a paso)
+================================================================================
+Documento vivo: actualizar cuando cambie la API o los tests. Texto plano para
+memoria / operación; enlaza con justificacion_entrada_datos_tslib.txt y
+justificacion_arquitectura_tslib.txt.
+
+--------------------------------------------------------------------------------
+0. Valoración del plan en 7 puntos (orden recomendado)
+--------------------------------------------------------------------------------
+Tu plan es coherente. Orden sugerido para no atascarse:
+
+  (1) Inventario y tabla Spark/local     ← este archivo, secciones 1–6
+  (2) Script o notebook de escenarios    ← siguiente paso práctico (fallos)
+  (3) Punto 6 ya cubierto aquí           ← mapeo paralelismo real vs deseado
+  (4) Punto 7 al final                   ← alto esfuerzo; hoy NO hay en repo
+      comparación sistemática contra statsmodels (u otra) para los cuatro
+      modelos + Spark; los benchmarks existentes son principalmente TSLib vs
+      TSLib (normal vs Spark en ARIMA).
+
+--------------------------------------------------------------------------------
+1. Modelos exportados y qué necesitan para funcionar
+--------------------------------------------------------------------------------
+
+Export público (tslib/models/__init__.py → tslib/__init__.py):
+  ARModel, MAModel, ARMAModel, ARIMAModel
+
+Requisitos de entorno:
+  - Python con numpy, scipy, pandas, matplotlib (core).
+  - PySpark + Java 17+ solo si usas tslib.spark.* (ver sección 5).
+
+Requisitos de datos (típico):
+  - array-like 1D: numpy.ndarray, list, pandas.Series.
+  - Valores numéricos; NaN permitidos solo según validación (sección 3).
+  - Longitud suficiente para el orden del modelo (el núcleo puede lanzar
+    error si la serie es demasiado corta respecto a p, q, d).
+
+Parámetros mínimos de constructor (resumen; ver docstrings en cada archivo):
+
+  ARModel        tslib/models/ar_model.py
+    order (opcional si auto_select), trend, auto_select, max_order,
+    selection_method ('pacf'|'aic'), validation, n_jobs
+
+  MAModel        tslib/models/ma_model.py
+    order, auto_select, max_order, selection_method ('acf'|'aic'),
+    validation, n_jobs
+
+  ARMAModel      tslib/models/arma_model.py
+    order (p,q), trend, auto_select, max_ar, max_ma, criterion ('aic'|'bic'),
+    validation, n_jobs
+
+  ARIMAModel     tslib/models/arima_model.py
+    order (p,d,q), trend, auto_select, max_p, max_d, max_q,
+    seasonal, seasonal_periods (API; estacional no implementado en núcleo),
+    validation, n_jobs
+
+Núcleos internos (tslib/core/arima.py):
+  ARProcess, MAProcess, ARMAProcess, ARIMAProcess — todos aceptan n_jobs y
+  comparten el mismo patrón de optimizador + calculadoras ACF/PACF.
+
+--------------------------------------------------------------------------------
+2. Métodos disponibles por modelo (API de alto nivel)
+--------------------------------------------------------------------------------
+
+Los cuatro modelos exponen el mismo conjunto de métodos públicos principales
+(salvo nombres de resultados de orden). Lista por clase:
+
+  __init__(...)
+  fit(data, **kwargs)
+  predict(steps, return_conf_int=..., alpha=..., **kwargs)
+  get_residuals()
+  get_fitted_values()
+  summary()
+  plot_diagnostics(figsize=...)
+  plot_forecast(...)
+  get_exploratory_analysis()     → acf_pacf, stationarity, data_quality, ...
+  get_order_selection_results()  → AR, MA, ARMA; ARIMAModel usa además
+                                   get_model_selection_results()
+  evaluate_forecast(actual, predicted)
+  get_residual_diagnostics()
+
+Validación de información (calidad de datos), no confundir con “métodos del
+modelo” en sentido estadístico:
+
+  - Integrada en fit: DataValidator.validate + DataQualityReport si
+    validation=True (misma lógica en los cuatro archivos *_model.py).
+  - Exploración: ACFPACFAnalyzer + StationarityAnalyzer en _perform_exploratory_
+    analysis (común).
+  - Preprocesamiento externo: tslib/preprocessing/validation.py (DataValidator
+    manual, clean_data), transformations.py (log, Box-Cox, diferencias, etc.).
+
+No hay un método separado tipo model.validate(data) sin fit: la validación
+atada al flujo está dentro de fit().
+
+--------------------------------------------------------------------------------
+3. Datos faltantes — comportamiento por modelo
+--------------------------------------------------------------------------------
+
+Comportamiento IDÉNTICO en AR, MA, ARMA, ARIMA para la API local con
+validation=True (default):
+
+  - fit() llama DataValidator.validate: demasiados NaN (ratio > max_missing_ratio
+    default 0.1) → is_valid False → ValueError.
+  - Menos NaN → puede ser válido con warning; la serie sigue con NaN en el
+    arreglo hasta que tú uses clean_data o similar.
+  - clean_data NO se llama dentro de fit.
+
+Con validation=False:
+  - No se ejecuta DataValidator en fit; el núcleo numérico puede fallar o
+    propagar NaN según implementación.
+
+Spark (GenericParallelProcessor / UDF en parallel_processor.py):
+  - dropna en la columna de valores antes de model.fit(y); no imputación.
+  - model.fit con validation=False en _build_model del registry (parallel_
+    processor instancia con auto_select=False; ver código).
+
+parallel_arima.py (fit_predict_arima_udf):
+  - dropna; ARIMAModel(validation=False).
+
+--------------------------------------------------------------------------------
+4. Casos de fallo representativos (local)
+--------------------------------------------------------------------------------
+
+Común a AR / MA / ARMA / ARIMA con validation=True:
+  - ValueError: "Data validation failed: ..." (demasiados faltantes, inf, etc.)
+
+AR / MA / ARMA:
+  - UserWarning si estacionariedad sugiere no estacionaria (sigue el fit).
+  - Errores del núcleo *Process.fit si datos insuficientes o numéricamente
+    inviables (revisar mensajes al ejecutar).
+
+ARIMAModel:
+  - No emite el mismo UserWarning de estacionariedad que AR/MA/ARMA; usa (p,d,q).
+  - seasonal=True no activa modelo estacional real en el núcleo (parámetros
+    de API reservados).
+
+Spark:
+  - ImportError si PySpark no instalado al instanciar clases que exigen Spark.
+  - ParallelARIMAWorkflow: ImportError explícito sin PySpark.
+  - GenericParallelProcessor: ImportError sin PySpark.
+  - Fallos JVM/Java al crear sesión.
+
+Para una matriz exhaustiva escenario × modelo, el siguiente paso es un script
+de prueba (plan sección 0.2).
+
+--------------------------------------------------------------------------------
+5. Qué ruta es “Spark / distribuida” y qué ruta es “serie normal”
+--------------------------------------------------------------------------------
+
+Política de sesión (código):
+  Antes de usar procesadores distribuidos, TSLib resuelve la SparkSession con
+  tslib/spark/ensure.py → ensure_spark_session(...):
+    - Si PySpark no está instalado: ImportError con mensaje DISTRIBUTED_REQUIRES_SPARK
+      (usar tslib.models para flujo lineal sin cluster).
+    - Si pasas spark_session y está detenida: RuntimeError (pasar None para re-crear).
+    - Si no pasas sesión: intenta SparkSession.getActiveSession(); si no hay,
+      crea una con get_or_create_spark_session + create_spark_session, con
+      parámetros master (p. ej. local[8] para núcleos), spark_config (memoria,
+      cores Spark, etc.) y app_name.
+  GenericParallelProcessor, ParallelARIMAProcessor y ParallelARIMAWorkflow
+  usan ensure_spark_session en __init__ (con master/spark_config donde aplica).
+
+  tslib/spark/core.py: create_spark_session y get_or_create_spark_session aceptan
+  master y app_name; la clave spark.master en spark_config también se respeta
+  al construir la sesión.
+
+Serie normal (un proceso Python, una o varias series en bucle en el driver):
+  - ARModel / MAModel / ARMAModel / ARIMAModel con .fit(data) sobre numpy/
+    Series.
+  - GenericParallelProcessor.fit_multiple_sequential(...) — modo sin cluster,
+    útil en tests (tests/test_models.py).
+
+Spark (varias series en paralelo en cluster o local[*]):
+  - GenericParallelProcessor(model_type='AR'|'MA'|'ARMA'|'ARIMA').fit_multiple(
+    spark_df, group_col, value_col, order, steps) — Pandas UDF por grupo.
+    Cada grupo ajusta el MISMO modelo lineal (ARModel, MAModel, ARMAModel o
+    ARIMAModel) con auto_select=False y orden fijo; _build_model solo pasa
+    order y n_jobs, así que validation queda en el default del modelo
+    (True en AR/MA/ARMA/ARIMA) salvo que se cambie _build_model. Los datos se
+    limpian con dropna en la columna de valores antes de fit (ver
+    tslib/spark/parallel_processor.py).
+  - Ejemplo ejecutable: examples/spark_parallel_generic_models.py
+  - ParallelARIMAProcessor + fit_predict_arima_udf — enfoque ARIMA múltiples
+    series (parallel_arima.py).
+  - ParallelARIMAWorkflow — pipeline batch multi-paso ARIMA (workflow).
+
+Módulos Spark adicionales (acf, MLE distribuido, etc.):
+  - tslib/spark/__init__.py documenta SparkACFCalculator, SparkPACFCalculator,
+    SparkMLEOptimizer, etc.; son capacidades separadas del fit simple de
+    ARIMAModel y requieren integración explícita en tu flujo.
+
+Regla práctica:
+  - ¿Entrada es pyspark.sql.DataFrame agrupado por id de serie? → Spark.
+  - ¿Entrada es un solo vector 1D en Python? → modelo normal.
+
+--------------------------------------------------------------------------------
+6. Paralelismo: ARIMA vs AR / MA / ARMA (sin inventar — solo lo que hay en código)
+--------------------------------------------------------------------------------
+
+6.1 Paralelismo INTRA una serie (multicore / threads en el mismo ajuste)
+
+  Archivo: tslib/core/arima.py
+
+  ARProcess, MAProcess, ARMAProcess y ARIMAProcess reciben n_jobs y pasan ese
+  n_jobs a:
+    - MLEOptimizer
+    - ACFCalculator
+    - PACFCalculator
+
+  Es decir: el mismo mecanismo de paralelización opcional del núcleo aplica a
+  AR, MA, ARMA y ARIMA cuando usas los modelos de alto nivel con n_jobs != 1
+  (los constructores ARModel, MAModel, ARMAModel, ARIMAModel propagan n_jobs
+  al *Process correspondiente).
+
+  Mapeo para documentación / ensayo (subconjuntos de ARIMA):
+    - AR(p)     → ARProcess: paralelismo en optimización MLE y en cómputo ACF/PACF
+                  usado internamente en el ajuste AR.
+    - MA(q)     → MAProcess: análogo.
+    - ARMA(p,q) → ARMAProcess: análogo.
+    - ARIMA     → ARIMAProcess: análogo más diferenciación en el proceso ARMA
+                  extendido (herencia en el mismo archivo).
+
+6.2 Clase ParallelARIMAProcess (NO es el camino por defecto de ARIMAModel)
+
+  Archivo: tslib/core/parallel_arima_internal.py
+
+  Es una implementación alternativa de ARIMA que paraleliza explícitamente
+  (p. ej. ACF y PACF con ThreadPoolExecutor, rutas de diferenciación bajo
+  ciertas condiciones de tamaño, etc.). ARIMAModel en arima_model.py instancia
+  ARIMAProcess, no ParallelARIMAProcess. Para el ensayo: “paralelización extra
+  documentada en parallel_arima_internal existe como clase; la API principal
+  usa ARIMAProcess + n_jobs”.
+
+6.3 Paralelismo INTER series (Spark)
+
+  - GenericParallelProcessor: AR, MA, ARMA, ARIMA vía el mismo mecanismo UDF;
+    paralelismo entre grupos (series), no sustituye el significado de n_jobs
+    dentro de cada ajuste.
+  - parallel_arima: orientado a ARIMA en UDF.
+
+--------------------------------------------------------------------------------
+7. Comparación Spark vs convencional vs librería autorizada — estado y pasos
+--------------------------------------------------------------------------------
+
+Suite automatizada (pytest):
+  tests/benchmark/
+    test_benchmark_ar.py, test_benchmark_ma.py, test_benchmark_arma.py,
+    test_benchmark_arima.py — cada uno mide (1) secuencial con n_jobs=1 vs -1,
+    (2) Spark GenericParallelProcessor vs secuencial, (3) alineación opcional con
+    statsmodels (importorskip si no está instalado). Marcador: @pytest.mark.benchmark;
+    Spark: @pytest.mark.spark en la prueba que usa sesión.
+  make test ejecuta todo tests/ incluyendo esta carpeta.
+  make benchmark ejecuta tests/benchmark/ con -s para ver tiempos impresos y
+    luego el benchmark legado tests/test_performance_benchmark.py.
+
+Estado previo adicional en el repositorio:
+  - tests/test_performance_benchmark.py: PerformanceBenchmark compara
+    implementación “normal” vs Spark sobre datos generados (principalmente
+    contexto ARIMA / múltiples series). Depende de PySpark y Java.
+  - tests/test_spark_comparison.py: comparaciones adicionales Spark vs normal
+    (según disponibilidad).
+  - tests/test_models.py: GenericParallelProcessor.fit_multiple_sequential
+    frente a lógica equivalente sin Spark.
+  - tests/benchmark/: batería por familia (AR, MA, ARMA, ARIMA) con tiempos
+    secuencial / Spark y chequeo laxo frente a statsmodels (instalar dev extra).
+
+Pasos sugeridos para endurecer el punto 7:
+  (a) Afinar tolerancias y métricas (AIC, MAE holdout) por modelo.
+  (b) Aumentar n_series / n_obs en jobs de CI pesados (marca slow).
+  (c) Excluir Spark en CI sin Java con pytest -m "not spark".
+
+--------------------------------------------------------------------------------
+8. Checklist rápido “¿funciona en mi máquina?”
+--------------------------------------------------------------------------------
+  pytest tests/test_models.py -v
+  pytest tests/test_arima.py -v
+  python -c "from tslib.utils.checks import check_spark_availability; print(check_spark_availability())"
+  Si True: pytest tests/test_performance_benchmark.py -v --tb=short -m slow
+  (según marcadores definidos en el proyecto)
+
+================================================================================
+Fin del inventario / plan
+================================================================================

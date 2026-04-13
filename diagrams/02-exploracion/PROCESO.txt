@@ -1,0 +1,34 @@
+Documentación: Exploración de datos
+Versión 1.0 · Alcance: validación y análisis exploratorio antes del modelado.
+Diagramas: DOCUMENTACION.md en esta carpeta.
+
+• Objetivo del paso
+  – Verificar que la serie seleccionada sea apta para modelar.
+  – Entregar señales tempranas de estructura temporal (ACF, PACF, tendencia, estacionalidad).
+  – Dejar rastreable qué estrategia de imputación se usó en exploración cuando hay faltantes.
+
+• Flujo operativo
+  – Usuario pulsa “Validar Datos”.
+  – App ejecuta validate_data sobre la columna de valores.
+  – Si la validación es válida, ejecuta get_exploratory_analysis para ACF/PACF y métricas.
+  – Se guardan `validation_report` y `exploratory_analysis` en estado reactivo.
+  – La UI renderiza resultados, gráficos y notas explicativas.
+
+• Reglas técnicas relevantes
+  – Si la validación no pasa, se bloquea avance de paso.
+  – Cualquier NaN en la columna de valores invalida el flujo; no hay imputación en la app.
+  – ACF/PACF requiere longitud mínima interna; con pocos datos se muestra “no disponible”.
+
+• Salidas del paso
+  – Validación: mensajes, advertencias, periodo estacional candidato y quality_report.
+  – Visualización: serie temporal y estadísticas básicas.
+  – Correlación: ACF/PACF truncadas a un número manejable de lags.
+  – Notas: señales detectadas (tendencia/estacionalidad).
+
+• Riesgos y mejoras
+  – Riesgo: usuario interpreta advertencias como errores fatales.
+    · Mejora: separar semáforo (Error / Advertencia / Recomendación).
+  – Riesgo: estacionalidad detectada en lags típicos sin contexto del negocio.
+    · Mejora: permitir confirmar periodicidad esperada por dominio.
+  – Riesgo: interpretación ambigua de métricas de calidad sin umbrales de referencia.
+    · Mejora: mostrar bandas orientativas (alto/medio/bajo) para completitud, validez y consistencia.

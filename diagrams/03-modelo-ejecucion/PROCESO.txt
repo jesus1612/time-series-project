@@ -1,0 +1,45 @@
+Documentación: Modelo y ejecución
+Versión 1.4 · Alcance: configuración, ajuste y ejecución comparativa lineal/paralela para AR, MA, ARMA y ARIMA sobre Spark.
+Diagramas: DOCUMENTACION.md en esta carpeta.
+
+• Objetivo del paso
+  – Ajustar el modelo seleccionado y generar pronóstico lineal.
+  – Ejecutar comparación lineal vs paralelo para AR, MA, ARMA y ARIMA, siempre sobre Spark.
+  – Registrar metadatos mínimos para trazabilidad de la corrida.
+
+• Flujo operativo
+  – Usuario define tipo de modelo y orden auto/manual (la serie ya debe estar completa, sin NaN).
+  – App ajusta modelo lineal y genera pronóstico.
+  – App ejecuta ruta paralela Spark y pronóstico paralelo para AR, MA, ARMA y ARIMA.
+  – App guarda resultados y metadata de ejecución.
+
+• Benchmark (pestaña aparte)
+  – Tiempos secuencial vs paralelo para varias órdenes ARIMA.
+  – Benchmark triple: lineal TSLib, ParallelARIMAWorkflow, Spark+statsmodels; datasets en TT/sampler/datasets/.
+
+• Trazabilidad mínima implementada
+  – Orden efectivo ajustado en el modelo lineal.
+  – Backend paralelo (`spark`) para todos los modelos en esta vista.
+  – Registro en `execution_log` (incluye avisos del motor como líneas ⚠ Aviso) y `runtime_warnings` en estado.
+  – Resumen en UI: panel "Registro de la corrida" en esta pantalla; detalle ampliado en Paso 4 (Resultados).
+
+• Regla de estacionariedad en ejecución
+  – Para AR, MA y ARMA, si validación detecta señal de tendencia se bloquea la ejecución en UI.
+  – Mensaje guía: usar diferenciación o cambiar a ARIMA antes de ajustar modelos estacionarios.
+
+• Estado del paralelismo por modelo en UI
+  – AR, MA, ARMA y ARIMA: ruta paralela Spark habilitada.
+  – No se usa paralelismo local por CPU (`n_jobs`) en esta vista.
+  – Si Spark no está disponible, la ruta paralela falla con mensaje explícito y no usa fallback CPU.
+
+• Métrica de precisión comparativa en UI
+  – Se muestra diferencia entre pronóstico lineal y paralelo: MAE Dif. L/P y RMSE Dif. L/P.
+  – Estas métricas comparan consistencia entre rutas; no sustituyen evaluación contra datos futuros reales.
+
+• Avisos del motor (Spark / TSLib)
+  – Captura en driver durante fit lineal y pronóstico; en paralelo genérico, avisos del ajuste por grupo se serializan en columna `engine_warnings` y se fusionan en `parallel_runtime_warnings`.
+  – UI: validación (paso 1) muestra `runtime_warnings` de validación+exploración; ejecución muestra log y paso 4 lista consolidada.
+
+• Mejoras propuestas
+  – Incluir tiempos por fase y tabla consolidada de comparación.
+  – Añadir backtesting holdout para precisión absoluta por ruta (lineal vs paralela).

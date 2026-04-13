@@ -1,0 +1,182 @@
+================================================================================
+TSLib — Justificación: entrada de datos, limpieza, transformación e imputación
+================================================================================
+
+Este documento describe el estado actual del repositorio time-series-library.
+El flujo de modelado NO comienza “siempre en ARIMA”: comienza en el método
+fit() de la clase que el usuario instanció (AR, MA, ARMA o ARIMA). Lo que
+sí está unificado es el patrón interno (misma secuencia lógica copiada en
+cuatro archivos), no un único orquestador central.
+
+--------------------------------------------------------------------------------
+1. Cuatro puntos de entrada (archivo y método)
+--------------------------------------------------------------------------------
+
+El “inicio técnico” del pipeline es siempre: Modelo.fit(data) del modelo que
+elegiste. Archivos:
+
+  Modelo      Archivo                        Clase         Núcleo interno (.fit)
+  ----------  -----------------------------  ------------  ----------------------
+  AR          tslib/models/ar_model.py       ARModel       ARProcess
+  MA          tslib/models/ma_model.py       MAModel       MAProcess
+  ARMA        tslib/models/arma_model.py     ARMAModel     ARMAProcess
+  ARIMA       tslib/models/arima_model.py    ARIMAModel    ARIMAProcess
+
+Cada fit(data) hace, en el mismo orden conceptual (líneas aproximadas en cada
+archivo son similares: ~104-158 AR, ~100-152 MA, ~109-164 ARMA, ~112-158 ARIMA):
+
+  Paso A  Convertir data: Series → .values; si no, np.asarray(..., dtype=float)
+  Paso B  Si validation=True (default): DataValidator.validate(data);
+          si is_valid es False → ValueError; si pasa, opcional DataQualityReport
+  Paso C  self._data = data
+  Paso D  _perform_exploratory_analysis(data):
+            ACFPACFAnalyzer.analyze(data)
+            StationarityAnalyzer.analyze(data)
+  Paso E  Diferencias según familia (ver sección 3)
+  Paso F  Selección de orden (si auto_select u order is None) con el selector
+          propio de cada modelo
+  Paso G  Construir *Process correspondiente y llamar .fit(data, **kwargs)
+
+Ninguno de los cuatro fit() llama a DataValidator.clean_data() automáticamente.
+La imputación sigue siendo un paso explícito previo, si la necesitas.
+
+--------------------------------------------------------------------------------
+2. Configuración de parámetros (constructor __init__) por modelo
+--------------------------------------------------------------------------------
+
+Parámetros clave que afectan el flujo antes y durante el ajuste:
+
+ARModel (ar_model.py)
+  order, trend ('c'|'nc'), auto_select, max_order, selection_method ('pacf'|'aic'),
+  validation, n_jobs
+
+MAModel (ma_model.py)
+  order, auto_select, max_order, selection_method ('acf'|'aic'),
+  validation, n_jobs
+  (sin parámetro trend en el constructor; el núcleo MAProcess no expone trend
+  como AR/ARMA en la misma forma)
+
+ARMAModel (arma_model.py)
+  order (p,q), trend, auto_select, max_ar, max_ma, criterion ('aic'|'bic'),
+  validation, n_jobs
+
+ARIMAModel (arima_model.py)
+  order (p,d,q), trend, auto_select, max_p, max_d, max_q,
+  seasonal, seasonal_periods (API presente; estacional no implementado en núcleo),
+  validation, n_jobs
+
+Todos instancian DataValidator() solo si validation=True. Todos usan el mismo
+módulo de validación (preprocessing/validation.py); los umbrales por defecto
+(min_length, max_missing_ratio, outlier_method) son los de DataValidator salvo
+que construyas un validador custom y lo integres tú fuera de estos modelos
+(los modelos actuales no aceptan inyectar otro DataValidator por parámetro).
+
+--------------------------------------------------------------------------------
+3. Estacionariedad: qué pasa en cada familia
+--------------------------------------------------------------------------------
+
+3.1 Análisis
+  En los cuatro modelos, el paso D ejecuta StationarityAnalyzer sobre la misma
+  data que entra al fit (tras validación). Resultados en self._stationarity_results.
+
+3.2 Advertencia explícita (UserWarning) solo en AR, MA y ARMA
+  Si is_stationary es False:
+    - ARModel, MAModel, ARMAModel: emiten warnings.warn sugiriendo diferenciar
+      o usar ARIMA (aprox. líneas 127-133 AR, 123-129 MA, 132-138 ARMA).
+    - ARIMAModel: NO emite esa advertencia en fit; la estacionariedad entra en
+      el resumen (summary) y en ARIMAOrderSelector vía suggested_differencing,
+      pero el flujo asume que el orden (p,d,q) puede incorporar diferenciación d.
+
+3.3 Implicación para tu app o ensayo
+  Para series claramente no estacionarias, la vía coherente con la librería es
+  ARIMAModel (d>0) o pre-diferenciar con DifferencingTransformer y luego AR/MA/
+  ARMA sobre la serie ya transformada, sabiendo que interpretas la escala.
+
+--------------------------------------------------------------------------------
+4. Validación de faltantes y calidad (común a los cuatro)
+--------------------------------------------------------------------------------
+
+4.1 Dentro de fit
+  Mismo contrato: validate() sobre el arreglo float; demasiados NaN → inválido;
+  inf → inválido; warnings por outliers/tendencia/estacionalidad heurística.
+
+4.2 Limpieza explícita
+  DataValidator.clean_data en preprocessing/validation.py. No está cableada
+  dentro de AR/MA/ARMA/ARIMA fit.
+
+4.3 Spark (recordatorio)
+  parallel_arima.py: dropna + ARIMAModel(validation=False) en UDF; no es el mismo
+  contrato que la API local con validation=True.
+
+--------------------------------------------------------------------------------
+5. Gráficos y diagnósticos visuales
+--------------------------------------------------------------------------------
+
+Los cuatro archivos ar_model.py, ma_model.py, arma_model.py, arima_model.py
+definen ambos métodos:
+  - plot_diagnostics(self, figsize=...)
+  - plot_forecast(self, ...)
+
+No se invocan dentro de fit(): matplotlib solo entra cuando tú llamas estos
+métodos tras el ajuste. El paso D (_perform_exploratory_analysis) calcula
+ACF/PACF y estacionariedad en memoria; no abre ventanas de gráfico por sí solo.
+Para mostrar ACF/PACF al usuario, la app debe leer get_exploratory_analysis()
+(o campos equivalentes) y dibujar, o reutilizar utilidades propias.
+
+--------------------------------------------------------------------------------
+6. Por qué el código “se siente desorganizado”
+--------------------------------------------------------------------------------
+
+La librería repite el mismo esqueleto de fit() en cuatro archivos en lugar de
+factorizar una función interna _fit_stationary_family(...) o una clase base con
+plantilla. Eso es una decisión de implementación actual: cuatro puntos de
+entrada reales, cuatro copias del flujo. Para documentación y ensayo, trata el
+patrón como “un pipeline conceptual, cuatro anclajes en código”.
+
+--------------------------------------------------------------------------------
+7. Transformaciones (preprocessing)
+--------------------------------------------------------------------------------
+
+Ubicación: tslib/preprocessing/transformations.py
+  DifferencingTransformer, LogTransformer, BoxCoxTransformer; StandardScaler y
+  MinMaxScaler en el mismo archivo pero no exportados en preprocessing/__init__.
+
+Uso: antes del fit del modelo que elijas, si tu diseño lo requiere (escala,
+varianza, o serie ya estacionaria para AR puro).
+
+--------------------------------------------------------------------------------
+8. Fundamento de imputación sencilla (y límites)
+--------------------------------------------------------------------------------
+
+(igual que en la versión anterior del documento; aplica a cualquier modelo
+cuando pasas un vector numérico completo al *Process interno.)
+
+8.1 Por qué puede bastar
+  MLE clásico sobre vector completo; interpolación lineal / ffill / bfill como
+  decisiones explícitas; validate() limita fracción de faltantes; métodos
+  auditables y baratos.
+
+8.2 Límites
+  Patrones de faltantes complejos, muchos huecos, fuerte estacionalidad en el
+  hueco: preferir enfoques fuera de alcance actual (estado-espacio, imputación
+  múltiple, etc.).
+
+--------------------------------------------------------------------------------
+9. Resumen operativo
+--------------------------------------------------------------------------------
+- Inicio del proceso: el fit() del modelo llamado (AR/MA/ARMA/ARIMA), archivo
+  tslib/models/<modelo>_model.py correspondiente.
+- Validación de faltantes: DataValidator en paso B si validation=True (común).
+- Estacionariedad: análisis en paso D; advertencia explícita solo AR/MA/ARMA;
+  ARIMA gestiona vía (p,d,q).
+- Gráficos: métodos plot_* tras el fit, no automáticos en fit.
+- Limpieza/imputación: clean_data manual; Spark UDF usa dropna.
+
+--------------------------------------------------------------------------------
+10. Fuera de la librería
+--------------------------------------------------------------------------------
+Carga de CSV/BD/API: responsabilidad del script o de la app (p. ej. Shiny).
+
+================================================================================
+Fin del documento
+================================================================================

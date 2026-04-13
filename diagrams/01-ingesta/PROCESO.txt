@@ -1,0 +1,32 @@
+Documentación: Ingesta de datos
+Versión 1.4 · Alcance: solo archivos locales, sin BD ni URLs.
+Diagramas: DOCUMENTACION.md en esta carpeta.
+
+• División de responsabilidades
+  – TSLib no lee archivos; la app lee con pandas y construye el DataFrame.
+  – TSLib expone sugerencias de columnas sobre el DataFrame: suggest_datetime_column y suggest_numeric_columns.
+  – El usuario confirma o cambia columnas en la UI; luego se extrae el vector y TSLib valida y modela.
+
+• Límite de archivo
+  – App: rechazo si tamaño > 500 MB antes de read_csv / read_excel (config_limits.MAX_UPLOAD_FILE_BYTES).
+  – Formatos: CSV, Excel .xlsx / .xls.
+
+• Valores faltantes (NaN) — sin imputación en la app
+  – Si la columna de valores contiene **cualquier** NaN (incluidos los producidos al convertir texto no numérico), la validación **no es válida** y no se ejecuta exploración ni modelado.
+  – Mensaje orientativo: completar la serie o usar otro archivo.
+  – El DataValidator de TSLib puede seguir aplicando su regla de máximo ~10 % faltantes cuando aplique; la app impone el corte estricto de cero NaN para el flujo del asistente.
+
+• Umbral del validador (referencia)
+  – DEFAULT_MAX_MISSING_RATIO en tslib.preprocessing.constants; por encima del umbral el validador marca serie inválida.
+  – Little & Rubin (2019): no hay un % universal válido; el criterio de negocio y el mecanismo de ausencia importan.
+
+• Validación ↔ UI
+  – validate_data devuelve valid, messages, warnings, quality_report.
+  – Exploración (ACF/PACF) solo se calcula si la validación es válida.
+
+• Datasets de prueba
+  – Carpeta TT/sampler/ (CSV completos) para benchmarks y pruebas reproducibles.
+
+• Mejoras futuras
+  – Preview explícito de conteo de NaN por columna en la UI de carga.
+  – Encoding CSV y selección de hoja Excel.

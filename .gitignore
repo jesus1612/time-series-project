@@ -1,0 +1,84 @@
+# Monorepo root — merged from tslib-shiny-app + time-series-library
+# Keep exceptions for committed CSVs under sampler/ and UI examples.
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments (any depth)
+venv/
+.venv/
+env/
+ENV/
+.env
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Tests / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+.hypothesis/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+temp/
+tmp/
+
+# Spark local artifacts
+spark-warehouse/
+metastore_db/
+derby.log
+
+# CSV: ignore by default (library convention); un-ignore committed datasets
+*.csv
+!sampler/datasets/**/*.csv
+!tslib-shiny-app/data/**/*.csv
+
+# Data directories (library convention); keep Shiny example data
+data/
+!tslib-shiny-app/data/
+
+# Other binary / artifacts from library template
+*.parquet
+*.pickle
+*.pkl
+
+# Jupyter
+.ipynb_checkpoints
+
+# Type checkers
+.mypy_cache/

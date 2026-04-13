@@ -1,0 +1,25 @@
+Documentación: Resultados (Paso 4)
+Versión 1.0 · Alcance: presentación de salidas tras ejecutar el paso "Modelo y ejecución".
+Diagramas: DOCUMENTACION.md en esta carpeta.
+
+• Objetivo del paso
+  – Mostrar métricas, pronóstico lineal y diagnósticos del modelo ajustado (incl. histograma/Q-Q y residuos estandarizados).
+  – Mostrar bloque paralelo Spark cuando exista flujo completado.
+  – Exponer avisos del motor (Python / Spark / TSLib) de la última corrida en UI.
+
+• Entradas principales por fuente
+  – TSLib: objetos y vectores producidos en el paso 3 (modelo ajustado, pronósticos, workflow paralelo, pronóstico Spark); el paso 4 solo los consume.
+  – App Shiny: app_state guarda referencias y blobs (fitted_model, forecast_results, parallel_workflow, parallel_forecast_results, execution_metadata, runtime_warnings).
+  – TSLibService (app): get_model_metrics, compare_forecasts y lecturas sobre el modelo para tarjetas y tablas.
+
+• Origen de los avisos
+  – Driver: registro con warnings.catch_warnings alrededor de fit_model y get_forecast.
+  – Spark: columna engine_warnings en el DataFrame de resultados (applyInPandas) más avisos del driver al planificar/ejecutar.
+  – Validación (paso 1): campo validation_report.runtime_warnings tras validar datos y análisis exploratorio.
+
+• Registro visible en paso 3
+  – execution_log en la tarjeta de ejecución incluye líneas "⚠ Aviso: …" por cada mensaje capturado.
+
+• Mejoras propuestas
+  – Clasificar avisos por categoría (estacionariedad, deprecación API, datos).
+  – Descarga CSV/JSON de pronósticos y de avisos.

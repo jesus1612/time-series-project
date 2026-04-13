@@ -1,0 +1,11 @@
+# Optional PySpark dependencies for distributed computing
+# REQUIRES: Java 17+ (LTS recommended: 17 or 21)
+# Install Java 17+ before installing these dependencies
+# macOS: brew install openjdk@17
+# Linux: sudo apt install openjdk-17-jdk
+# Windows: Download from https://adoptium.net/temurin/releases/?version=17
+
+pyspark>=4.0.1
+pyarrow>=10.0.0
+
+

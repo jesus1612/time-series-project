@@ -1,0 +1,193 @@
+================================================================================
+TSLib (time-series-library) — Justificación de arquitectura (texto plano)
+================================================================================
+Propósito: apoyo para memoria / ensayo. Describe el estado actual del código en
+el repositorio, sin imponer política normativa de imputación de datos faltantes
+(hasta definición explícita del proyecto).
+
+Mantenimiento: ante cambios de fronteras de paquetes, flujo Spark o validación,
+actualizar este archivo (y los demás justificacion_*.txt en docs/) en el mismo cambio.
+
+--------------------------------------------------------------------------------
+1. Contexto del sistema
+--------------------------------------------------------------------------------
+TSLib es una biblioteca Python de análisis de series de tiempo con modelos
+AR, MA, ARMA y ARIMA implementados en el núcleo, y soporte opcional de
+procesamiento distribuido vía PySpark. La interfaz gráfica de referencia del
+proyecto de titulación vive en otro repositorio (p. ej. aplicación Shiny); esta
+biblioteca concentra modelos, validación de datos, métricas y rutas paralelas.
+
+Entrada de datos, limpieza, transformación e imputación, y flujo por modelo
+(AR / MA / ARMA / ARIMA, no solo ARIMA): docs/justificacion_entrada_datos_tslib.txt
+
+Inventario de capacidades, métodos, Spark vs local, paralelismo y plan de
+benchmarks: docs/inventario_y_plan_capacidades_tslib.txt
+
+--------------------------------------------------------------------------------
+2. Mapa de módulos (dónde está cada cosa)
+--------------------------------------------------------------------------------
+tslib/models/
+  API de alto nivel: ARModel, MAModel, ARMAModel, ARIMAModel (estilo sklearn).
+  Cada clase tiene su propio fit() en ar_model.py, ma_model.py, arma_model.py,
+  arima_model.py; el patrón (validación → exploración ACF/PACF+estacionariedad
+  → selección de orden → *Process.fit) está duplicado en esos cuatro archivos.
+  Núcleos: ARProcess, MAProcess, ARMAProcess, ARIMAProcess en tslib/core/.
+
+tslib/core/
+  Implementación matemática: ARIMAProcess, estacionariedad, ACF/PACF,
+  optimización MLE. ParallelARIMAProcess paraleliza operaciones costosas
+  dentro de un solo ajuste (no es el mismo mecanismo que Spark multi-serie).
+
+tslib/preprocessing/
+  DataValidator y DataQualityReport (validation.py).
+  Transformaciones: diferencias, log, etc. (transformations.py).
+
+tslib/metrics/
+  Evaluación y diagnósticos de modelos.
+
+tslib/utils/checks.py
+  check_spark_availability (import pyspark).
+  check_dependency, check_system_requirements (versiones de dependencias).
+
+tslib/spark/
+  core.py: SparkSessionManager singleton, get_or_create_spark_session,
+           create_spark_session, SparkDataConverter, get_optimized_spark_config.
+  parallel_arima.py: Pandas UDF / applyInPandas sobre ARIMAModel.
+  parallel_arima_workflow.py: pipeline multi-paso distribuido.
+  parallel_processor.py: GenericParallelProcessor para AR / MA / ARMA / ARIMA.
+  utils.py: helpers DataFrame Spark; create_spark_session permisivo (None si falla);
+            duplica lógica de check_spark_availability coherente con utils/checks.
+
+examples/ y tests/
+  Demos, benchmarks y pruebas; varias pruebas condicionan rutas según Spark.
+
+docs/ (Markdown existente)
+  Matemáticas por modelo, integración, benchmarks; este .txt complementa con
+  arquitectura y fallos.
+
+--------------------------------------------------------------------------------
+3. Validación del uso de Spark
+--------------------------------------------------------------------------------
+3.1 Runtime
+  check_spark_availability() en tslib/utils/checks.py: try/except ImportError
+  al importar pyspark. Retorna booleano.
+
+3.2 Componentes que exigen Spark
+  ParallelARIMAWorkflow: en __init__, si PySpark no está disponible, ImportError
+  con mensaje orientado a instalación (requirements-spark).
+
+3.3 Sesión
+  ensure_spark_session (spark/ensure.py): API recomendada antes de procesadores
+  distribuidos — comprueba PySpark, valida sesión viva o crea una con master
+  (p. ej. local[N] para núcleos) y spark_config; registra en SparkSessionManager
+  si register_global=True.
+  get_or_create_spark_session / create_spark_session (spark/core.py): prioridad
+  (1) sesión explícita, (2) global activa (sesiones detenidas se descartan),
+  (3) creación con master/app_name/spark_config fusionados.
+
+  tslib/spark/utils.py define otro create_spark_session: ante fallo puede
+  imprimir y devolver None (contrato más permisivo que core).
+
+3.4 Entorno
+  Makefile: objetivos de verificación de Java / Python para ejecutar Spark
+  localmente; no sustituyen las comprobaciones en código.
+
+3.5 Tests
+  Varios tests consultan check_spark_availability() y omiten o acotan escenarios
+  si Spark no está instalado.
+
+--------------------------------------------------------------------------------
+4. Validación de datos (fuera de Spark)
+--------------------------------------------------------------------------------
+DataValidator (preprocessing/validation.py):
+  - Longitud mínima (default min_length=3).
+  - Valores faltantes: si missing_ratio > max_missing_ratio (default 0.1),
+    is_valid=False; si hay faltantes por debajo del umbral, warning.
+  - inf: is_valid=False.
+  - Varianza cero: warning y recomendación.
+  - Outliers (IQR / zscore / modified_zscore): warnings y recomendación.
+  - Heurísticas de estacionalidad y tendencia: recomendaciones (no bloquean
+    por sí solas en el flujo estándar de validate).
+
+ARIMAModel.fit (models/arima_model.py):
+  - Si validation=True (default), ejecuta DataValidator.validate; si no
+    is_valid, ValueError con issues.
+
+DataValidator.clean_data:
+  - Métodos: interpolate, forward_fill, backward_fill, drop.
+  - No se llama automáticamente desde ARIMAModel.fit; el usuario debe
+    aplicar limpieza explícita si la necesita.
+
+Parámetros seasonal / seasonal_periods en ARIMAModel:
+  - Documentados como no implementados aún; la API los acepta pero no activan
+    ARIMA estacional en el núcleo.
+
+--------------------------------------------------------------------------------
+5. Comportamiento bajo Spark (UDF y procesadores)
+--------------------------------------------------------------------------------
+fit_predict_arima_udf (spark/parallel_arima.py):
+  - dropna sobre la serie antes de ajustar.
+  - Si longitud < 10 tras dropna, devuelve predicciones NaN (steps).
+  - Instancia ARIMAModel con validation=False por rendimiento.
+  - Ante excepción en ajuste/predicción: predicciones NaN y print del error
+    (efecto lateral en executors).
+
+GenericParallelProcessor._fit_predict_group (spark/parallel_processor.py):
+  - dropna en la columna de valores.
+  - Ante excepción: vector de forecast NaN y campo status con mensaje
+    truncado.
+
+ParallelARIMAWorkflow:
+  - Exige estado fitted_ para predict, summary y acceso a resultados; ValueError
+    si no corresponde.
+  - ValueError si no hay ajustes exitosos en la selección de modelos
+    ("No successful model fits found").
+
+Helpers en spark/utils.py:
+  - Validación de columnas requeridas en DataFrames.
+
+--------------------------------------------------------------------------------
+6. Matriz resumida de fallos y respuestas
+--------------------------------------------------------------------------------
+Capa              Situación                              Respuesta en código
+--------------------------------------------------------------------------------
+Core API          Validación DataValidator falla         ValueError con issues
+Core API          seasonal=True (no implementado)        Parámetros almacenados;
+                                                         sin modelo estacional real
+Spark             PySpark ausente (workflow)             ImportError
+Spark             PySpark ausente (utils helper)         None o mensaje impreso
+Spark / JVM       Fallo al crear sesión (core)         Excepción al getOrCreate
+UDF ARIMA         Serie corta o error en fit           Predicciones NaN; print
+GenericParallel   model_type no soportado               ValueError
+Processor
+Workflow          predict sin fit                       ValueError
+Workflow          sin modelos válidos en selección      ValueError
+
+--------------------------------------------------------------------------------
+7. Estado actual: valores faltantes e imputación (descriptivo)
+--------------------------------------------------------------------------------
+- ARIMAModel con validation=True rechaza datos cuando DataValidator marca
+  is_valid=False (p. ej. demasiados NaN respecto a max_missing_ratio o presencia
+  de inf). No imputa automáticamente en fit.
+
+- DataValidator.clean_data ofrece interpolate / ffill / bfill / drop para
+  preparación manual previa al modelo.
+
+- En rutas Spark UDF, la estrategia operativa es eliminar NaN con dropna y
+  degradar a predicciones NaN si no hay suficientes observaciones o si el
+  ajuste falla; no se reutiliza DataValidator en ese camino por defecto.
+
+Cualquier política oficial futura (p. ej. imputación obligatoria antes del
+fit) deberá alinearse cambiando código y actualizando este documento.
+
+--------------------------------------------------------------------------------
+8. Regla de mantenimiento de la documentación en texto plano
+--------------------------------------------------------------------------------
+Cualquier cambio de arquitectura que altere paquetes, flujo Spark, validación
+o contratos de error debe ir acompañado de la actualización de las secciones
+correspondientes en este archivo y en docs/justificacion_entrada_datos_tslib.txt
+cuando afecte entrada de datos o preprocesamiento.
+
+================================================================================
+Fin del documento
+================================================================================
