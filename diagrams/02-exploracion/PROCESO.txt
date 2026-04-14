@@ -5,7 +5,7 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
 • Objetivo del paso
   – Verificar que la serie seleccionada sea apta para modelar.
   – Entregar señales tempranas de estructura temporal (ACF, PACF, tendencia, estacionalidad).
-  – No aplica rastro de imputación en exploración: con validación exitosa la columna de valores no tiene NaN en el flujo del asistente.
+  – Con validación exitosa la columna de valores queda **completa** para el flujo del asistente (lista para ACF/PACF y estadísticas).
 
 • Flujo operativo
   – Usuario pulsa “Validar Datos”.
@@ -16,14 +16,14 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
 
 • Reglas técnicas relevantes
   – Si la validación no pasa, se bloquea avance de paso.
-  – Cualquier NaN en la columna de valores invalida el flujo; no hay imputación en la app.
+  – La app exige columna de valores sin NaN para avanzar; la serie lista se explora tal cual.
   – ACF/PACF requiere longitud mínima interna; con pocos datos se muestra “no disponible”.
 
 • Salidas del paso
-  – Validación: mensajes, advertencias, periodo estacional candidato y quality_report.
+  – Validación: mensajes de `issues`, tabla de calidad si aplica, `quality_report` completo en estado, avisos del motor si los hubo.
   – Visualización: serie temporal y estadísticas básicas.
   – Correlación: ACF/PACF truncadas a un número manejable de lags.
-  – Notas: señales detectadas (tendencia/estacionalidad).
+  – Notas de exploración: texto breve que remite a **serie, ACF/PACF y estadísticas** como lectura principal de la estructura.
 
 • Riesgos y mejoras
   – Riesgo: usuario interpreta advertencias como errores fatales.

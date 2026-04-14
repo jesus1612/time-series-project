@@ -44,28 +44,6 @@ def _validator_issue_to_spanish(issue: str) -> str:
     return issue
 
 
-def _validator_warning_to_spanish(warning: str) -> str:
-    if warning.startswith("Missing values detected"):
-        return "Hay valores faltantes; la app no imputa datos — completa la serie o usa otro archivo."
-    if warning.startswith("Outliers detected"):
-        return "Se detectaron outliers; conviene revisar su impacto antes del ajuste."
-    if warning.startswith("Constant data detected"):
-        return "Serie constante detectada; valora si es adecuada para modelos de series."
-    if "Trend detected" in warning:
-        return "Posible tendencia; puede requerir diferenciación según el modelo."
-    return warning
-
-
-def _validator_recommendation_to_spanish(recommendation: str) -> str:
-    if "Trend detected - consider differencing" in recommendation:
-        return "Se recomienda considerar diferenciación por presencia de tendencia."
-    if "Consider outlier treatment before modeling" in recommendation:
-        return "Se recomienda tratar outliers antes de modelar."
-    if "Consider if this is appropriate for time series analysis" in recommendation:
-        return "Se recomienda revisar si una serie constante es adecuada para el análisis."
-    return recommendation
-
-
 def _has_trend_signal(validation_report: Optional[Dict[str, Any]]) -> bool:
     """Detecta señal de tendencia desde recomendaciones del validador."""
     if not validation_report:
@@ -179,12 +157,9 @@ class TSLibService:
             for issue in vr.get("issues", []):
                 messages.append(_validator_issue_to_spanish(issue))
 
-            warnings = [_validator_warning_to_spanish(w) for w in vr.get("warnings", [])]
-            for rec in vr.get("recommendations", []):
-                rec_s = str(rec)
-                if "Seasonal patterns detected" in rec_s:
-                    continue
-                warnings.append(_validator_recommendation_to_spanish(rec_s))
+            # DataValidator still fills quality_report (warnings, recommendations, diagnostics)
+            # for model gating (e.g. AR/MA/ARMA vs trend); we do not surface heuristic banners here.
+            warnings: List[str] = []
 
             if np.any(np.isnan(data)):
                 tslib_ok = False
@@ -192,26 +167,6 @@ class TSLibService:
                     0,
                     "Dataset contiene datos faltantes. No se puede procesar sin completar la serie.",
                 )
-
-            if len(data) < 30:
-                warnings.append(
-                    "Serie temporal corta (menos de 30 observaciones). "
-                    "Los resultados pueden ser poco fiables."
-                )
-
-            if np.any(np.isinf(data)):
-                warnings.append("Valores infinitos detectados en la columna.")
-
-            finite = data[np.isfinite(data)]
-            if len(finite) >= 4:
-                q1 = np.percentile(finite, 25)
-                q3 = np.percentile(finite, 75)
-                iqr = q3 - q1
-                lower_bound = q1 - 1.5 * iqr
-                upper_bound = q3 + 1.5 * iqr
-                outliers = int(np.sum((data < lower_bound) | (data > upper_bound)))
-                if outliers > 0:
-                    warnings.append(f"Outliers detectados (IQR servicio): {outliers}")
 
             if not tslib_ok:
                 messages.insert(0, "✗ Los datos no pasan la validación de TSLib")
@@ -222,7 +177,7 @@ class TSLibService:
                 "warnings": warnings,
                 "quality_report": vr,
                 "length": len(data),
-                "has_issues": len(warnings) > 0 or not tslib_ok,
+                "has_issues": not tslib_ok,
             }
 
         except Exception as e:

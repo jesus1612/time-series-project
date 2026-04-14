@@ -1,8 +1,8 @@
 # Documentación: Exploración de datos
 
-Este paso valida la serie elegida, calcula estadísticas básicas y genera señales exploratorias (ACF/PACF, tendencia, estacionalidad) antes del modelado.
+Este paso **toma la serie ya validada** en carga, calcula estadísticas básicas y genera señales exploratorias (ACF/PACF y diagnósticos del validador en `quality_report`) antes del modelado.
 
-En el flujo del asistente la columna de valores llega **sin NaN** (el paso 1 la rechaza si hay faltantes); TSLib sigue comprobando longitud, infinitos y el resto de reglas del `DataValidator`. No hay imputación en la app.
+En el flujo del asistente la columna de valores llega **completa** para continuar; el `DataValidator` sigue registrando longitud, infinitos y métricas de calidad. La app **modela sobre la serie tal cual** llega tras la validación (sin rellenar huecos en este paso).
 
 Importar en [diagrams.net](https://app.diagrams.net/): **Insertar → Avanzado → Mermaid**.
 
@@ -14,7 +14,7 @@ Importar en [diagrams.net](https://app.diagrams.net/): **Insertar → Avanzado �
 flowchart TB
   subgraph UI["Paso 2 — Exploración"]
     A[Usuario pulsa Validar Datos]
-    B[Mostrar avisos, periodo estacional y estado de validación]
+    B[Mostrar estado de validación, tabla de calidad si aplica, avisos del motor si hay]
     C[Mostrar serie temporal]
     D[Mostrar estadísticas básicas]
     E[Mostrar ACF y PACF]
@@ -70,11 +70,11 @@ flowchart TD
 
 ## Qué se muestra en pantalla
 
-- **Estado de validación**: mensajes y advertencias en español, incluyendo periodos estacionales candidatos cuando se detectan.
+- **Estado de validación**: mensajes de reglas duras en español; avisos del motor si las librerías los emiten; tabla de calidad cuando hay métricas.
 - **Serie temporal**: gráfica principal para inspección visual.
 - **Estadísticas**: media, desviación, mínimo y máximo.
 - **ACF/PACF**: evidencia de dependencia temporal por rezagos.
-- **Notas de exploración**: señales detectadas (tendencia/estacionalidad); no hay imputación en la app.
+- **Notas de exploración**: indicación breve que orienta a interpretar la estructura a partir de la **serie**, **ACF/PACF** y **estadísticas**.
 
 ---
 

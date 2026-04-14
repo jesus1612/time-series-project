@@ -70,9 +70,8 @@ pip install pyspark
 ```
 
 ### La validación falla
-- Verifica que tienes al menos 30 observaciones
-- Revisa que no haya demasiados valores faltantes
-- Considera usar ARIMA si los datos tienen tendencia
+- TSLib exige al menos **3** observaciones y, fuera del corte estricto de la app, como mucho **10 %** de faltantes (`DataValidator`).
+- En el asistente, **cualquier NaN** en la columna de valores invalida el flujo hasta completar la serie.
 
 ### Los gráficos no aparecen
 - Espera unos segundos después de cambiar de paso

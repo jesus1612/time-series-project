@@ -95,7 +95,7 @@ Con **ARIMA** y ambas rutas: gráfico único de pronóstico (rosa lineal, verde 
 
 En la UI se bloquea AR, MA y ARMA cuando la validación reporta señal de tendencia (riesgo de no estacionariedad). En ese caso se recomienda diferenciación o usar ARIMA antes de ejecutar.
 
-La ruta paralela cubre AR, MA, ARMA y ARIMA sobre Spark; no se usa paralelismo local por CPU (`n_jobs`) en esta pantalla.
+La ruta paralela cubre AR, MA, ARMA y ARIMA sobre **Spark**; el ajuste **lineal** en esta pantalla puede usar `n_jobs` dentro de TSLib, pero el **paralelismo distribuido** de la corrida comparativa es el de Spark.
 
 ## Pestaña Benchmark (ARIMA)
 

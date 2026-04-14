@@ -11,18 +11,18 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
   – App: rechazo si tamaño > 500 MB antes de read_csv / read_excel (config_limits.MAX_UPLOAD_FILE_BYTES).
   – Formatos: CSV, Excel .xlsx / .xls.
 
-• Valores faltantes (NaN) — sin imputación en la app
-  – Si la columna de valores contiene **cualquier** NaN (incluidos los producidos al convertir texto no numérico), la validación **no es válida** y no se ejecuta exploración ni modelado.
-  – Mensaje orientativo: completar la serie o usar otro archivo.
-  – El umbral **~10 %** (`DEFAULT_MAX_MISSING_RATIO`) es regla del **DataValidator en TSLib** para datos que aún pueden llevar faltantes (p. ej. uso programático fuera del asistente). En **esta app**, después de extraer la serie, **cualquier NaN fuerza fallo** antes de dar por bueno el flujo: no hay “pasar con un 5 % de NaN”. Con cero NaN, el validador sigue evaluando longitud, infinitos y demás.
+• Valores faltantes (NaN) — serie completa en la app
+  – La app **exige** columna de valores **sin NaN** (incl. tras convertir texto no numérico) para marcar validación correcta y lanzar exploración y modelado.
+  – Mensaje orientativo si falta completar: completar la serie o usar otro archivo.
+  – El **10 %** (`DEFAULT_MAX_MISSING_RATIO`) es el **tamiz del DataValidator en TSLib** cuando el vector aún puede contener faltantes (p. ej. scripts). En el asistente, el vector entra **completo**, así que el validador aplica además longitud mínima, infinitos y métricas de calidad sobre ese vector.
 
 • Umbral del validador (referencia)
   – DEFAULT_MAX_MISSING_RATIO en tslib.preprocessing.constants; por encima del umbral el validador marca serie inválida.
   – Little & Rubin (2019): no hay un % universal válido; el criterio de negocio y el mecanismo de ausencia importan.
 
 • Validación ↔ UI
-  – validate_data devuelve valid, messages, warnings, quality_report.
-  – Exploración (ACF/PACF) solo se calcula si la validación es válida.
+  – validate_data devuelve `valid`, `messages` (issues traducidos), `warnings` (vacío de avisos heurísticos), `quality_report` completo y, tras el handler, `runtime_warnings` de librerías.
+  – Con validación válida se calcula exploración (ACF/PACF).
 
 • Datasets de prueba
   – Carpeta TT/sampler/ (CSV completos) para benchmarks y pruebas reproducibles.

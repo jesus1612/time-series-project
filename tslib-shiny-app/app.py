@@ -33,6 +33,37 @@ from services.evaluation_plots import (
     plot_standardized_residuals,
 )
 from config_limits import MAX_UPLOAD_FILE_BYTES
+from typing import Any, Dict, Optional
+
+
+def _forecast_seq_len(seq: Any) -> int:
+    """Length of a forecast sequence without bool(ndarray) (numpy-safe)."""
+    if seq is None:
+        return 0
+    if isinstance(seq, np.ndarray):
+        return int(seq.size)
+    try:
+        return len(seq)
+    except TypeError:
+        return 0
+
+
+def _has_forecast_values(d: Optional[Dict[str, Any]], key: str = "forecast") -> bool:
+    """True if d has a non-empty forecast field (safe when values are numpy arrays)."""
+    if not d:
+        return False
+    return _forecast_seq_len(d.get(key)) > 0
+
+
+def _as_forecast_array(d: Optional[Dict[str, Any]], key: str = "forecast") -> np.ndarray:
+    """Forecast values as 1-D float array; empty if missing (avoids `arr or []`)."""
+    if not d:
+        return np.array([], dtype=float)
+    v = d.get(key)
+    if v is None:
+        return np.array([], dtype=float)
+    return np.asarray(v, dtype=float).ravel()
+
 
 STEPS = [
     {
@@ -834,39 +865,17 @@ def server(input, output, session):
 
     @render.ui
     def exploration_notes_ui():
-        """Explain exploratory findings in plain Spanish."""
+        """Short hint; exploratory detail is in plots and statistics (no heuristic text banners)."""
         state = app_state.get()
         validation = state.get("validation_report", {}) or {}
-        quality = validation.get("quality_report", {}) or {}
         analysis = state.get("exploratory_analysis", {}) or {}
-        meta = analysis.get("meta", {}) or {}
 
         if not validation and not analysis:
             return ui.tags.p("Valida los datos para ver notas de exploración.", class_="text-muted")
 
-        notes = []
-
-        recs = quality.get("recommendations", [])
-        if any("Seasonal patterns detected" in str(r) for r in recs):
-            notes.append(
-                "Señal estacional detectada por picos de autocorrelación en lags típicos "
-                "(4, 7, 12, 24) con umbral aproximado |ACF| > 0.3."
-            )
-        if any("Trend detected" in str(r) for r in recs):
-            notes.append(
-                "Señal de tendencia detectada con ajuste lineal simple "
-                "(R² por encima del umbral interno del validador)."
-            )
-
-        if not notes:
-            return ui.tags.p(
-                "No se detectaron señales relevantes adicionales en la exploración.",
-                class_="text-muted",
-            )
-
-        return ui.div(
-            *[ui.div(f"• {n}", class_="progress-step") for n in notes],
-            class_="progress-list",
+        return ui.tags.p(
+            "Usa la serie, estadísticas y ACF/PACF de esta pantalla para interpretar la estructura.",
+            class_="text-muted",
         )
 
     # Model selection renders
@@ -1197,8 +1206,8 @@ def server(input, output, session):
             mt == "ARIMA"
             and forecast_results
             and parallel_forecast_results
-            and forecast_results.get("forecast")
-            and parallel_forecast_results.get("forecast")
+            and _has_forecast_values(forecast_results)
+            and _has_forecast_values(parallel_forecast_results)
         ):
             return _figure_arima_lineal_vs_paralelo()
         
@@ -1275,8 +1284,8 @@ def server(input, output, session):
 
         if (
             state.get("model_type") == "ARIMA"
-            and pfc
-            and forecast
+            and _forecast_seq_len(pfc) > 0
+            and _forecast_seq_len(forecast) > 0
         ):
             table_data = []
             n = min(len(forecast), len(pfc))
@@ -1313,8 +1322,8 @@ def server(input, output, session):
             return fig
         fr = state.get("forecast_results") or {}
         pr = state.get("parallel_forecast_results") or {}
-        a = np.asarray(fr.get("forecast") or [], dtype=float)
-        b = np.asarray(pr.get("forecast") or [], dtype=float)
+        a = _as_forecast_array(fr)
+        b = _as_forecast_array(pr)
         n = min(len(a), len(b))
         if n == 0:
             fig, ax = plt.subplots(figsize=(8, 3))
@@ -1652,8 +1661,8 @@ def server(input, output, session):
             state.get("model_type") == "ARIMA"
             and state.get("forecast_results")
             and state.get("parallel_forecast_results")
-            and (state.get("forecast_results") or {}).get("forecast")
-            and (state.get("parallel_forecast_results") or {}).get("forecast")
+            and _has_forecast_values(state.get("forecast_results"))
+            and _has_forecast_values(state.get("parallel_forecast_results"))
         ):
             return _figure_arima_lineal_vs_paralelo()
 
@@ -1708,8 +1717,8 @@ def server(input, output, session):
 
         if (
             state.get("model_type") == "ARIMA"
-            and (state.get("forecast_results") or {}).get("forecast")
-            and (state.get("parallel_forecast_results") or {}).get("forecast")
+            and _has_forecast_values(state.get("forecast_results"))
+            and _has_forecast_values(state.get("parallel_forecast_results"))
         ):
             return ui.div(
                 ui.tags.p(
