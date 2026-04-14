@@ -2,6 +2,8 @@
 
 Este paso valida la serie elegida, calcula estadísticas básicas y genera señales exploratorias (ACF/PACF, tendencia, estacionalidad) antes del modelado.
 
+En el flujo del asistente la columna de valores llega **sin NaN** (el paso 1 la rechaza si hay faltantes); TSLib sigue comprobando longitud, infinitos y el resto de reglas del `DataValidator`. No hay imputación en la app.
+
 Importar en [diagrams.net](https://app.diagrams.net/): **Insertar → Avanzado → Mermaid**.
 
 ---

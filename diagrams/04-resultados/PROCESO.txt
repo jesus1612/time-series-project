@@ -1,10 +1,11 @@
 Documentación: Resultados (Paso 4)
-Versión 1.0 · Alcance: presentación de salidas tras ejecutar el paso "Modelo y ejecución".
+Versión 1.1 · Alcance: presentación de salidas tras ejecutar el paso "Modelo y ejecución".
 Diagramas: DOCUMENTACION.md en esta carpeta.
 
 • Objetivo del paso
-  – Mostrar métricas, pronóstico lineal y diagnósticos del modelo ajustado (incl. histograma/Q-Q y residuos estandarizados).
-  – Mostrar bloque paralelo Spark cuando exista flujo completado.
+  – Mostrar métricas, pronóstico y diagnósticos del modelo lineal (incl. histograma/Q-Q y residuos estandarizados).
+  – Con **ARIMA** y ruta paralela OK: **mismo gráfico** de pronóstico comparando lineal (rosa) y paralelo (verde); tabla **Paso / Lineal / Paralelo / |L−P|**; gráfico de barras |L−P| por horizonte.
+  – Bloque paralelo Spark: métricas AIC/BIC paralelos si vienen en `parameters_`, tiempos de ajuste del paso 3 en información del modelo.
   – Exponer avisos del motor (Python / Spark / TSLib) de la última corrida en UI.
 
 • Entradas principales por fuente

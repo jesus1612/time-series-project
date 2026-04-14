@@ -60,6 +60,7 @@ flowchart TD
 
 - Orden efectivo del modelo ajustado.
 - Backend paralelo utilizado (`spark` cuando está disponible).
+- Tiempos de wall-clock del paso 3: `execution_metadata.time_linear_fit_s`, `time_parallel_fit_s`.
 - Log de ejecución con hitos principales y líneas **⚠ Aviso:** por cada mensaje capturado del motor (TSLib, PySpark en driver, workers en ruta genérica AR/MA/ARMA).
 - Lista `runtime_warnings` en estado y copia en `execution_metadata.runtime_warnings`.
 - Metadatos de ejecución en estado reactivo (`execution_metadata`).
@@ -78,16 +79,17 @@ La ruta genérica Spark usa `groupBy.applyInPandas` (API recomendada frente al `
 
 ## Áreas de mejora
 
-- Mostrar tiempo de ejecución por fase (fit lineal, forecast, paralelo).
+- Ampliar metadatos con **tiempos de forecast** lineal/paralelo además del fit (ya se guardan `time_linear_fit_s` y `time_parallel_fit_s`).
 - Mostrar “por qué” del orden automático elegido por cada modelo.
-- Estandarizar tabla comparativa lineal vs paralelo (error y tiempo) para todos los modelos.
+- Estandarizar tabla comparativa lineal vs paralelo (error y tiempo) para todos los modelos (hoy el gráfico/tabla |L−P| está centrado en ARIMA con ambas rutas OK).
 - Traducir o resumir en español avisos técnicos largos (mensajes de librerías en inglés).
 
 
 ## Nota sobre precisión
 
-La UI muestra `MAE Dif. L/P` y `RMSE Dif. L/P` como distancia entre pronóstico lineal y paralelo. Esto sirve para comparar consistencia entre rutas de ejecución.
-Para medir precisión real del modelo, el siguiente paso recomendado es backtesting con conjunto holdout.
+La UI muestra métricas de **diferencia entre pronósticos** lineal vs paralelo (p. ej. MAE |L−P|, RMSE entre vectores, escalar tipo MAPE*). Sirven para comparar **consistencia entre rutas**, no error frente a futuro real salvo que se incorpore hold-out en el asistente.
+
+Con **ARIMA** y ambas rutas: gráfico único de pronóstico (rosa lineal, verde paralelo), tabla comparativa y barras |L−P| por horizonte en Resultados.
 
 ## Regla de estacionariedad
 
@@ -97,7 +99,9 @@ La ruta paralela cubre AR, MA, ARMA y ARIMA sobre Spark; no se usa paralelismo l
 
 ## Pestaña Benchmark (ARIMA)
 
-Fuera del asistente por pasos, la pestaña **Benchmark** incluye:
+Fuera del asistente por pasos, la pestaña **Benchmark** compara **dos rutas** sobre series sintéticas (tiempos de ajuste) y CSV en `sampler/datasets/` (holdout):
 
-- Comparación de tiempos **secuencial vs paralelo** (`n_jobs`) para órdenes **ARIMA** distintos.
-- **Benchmark triple ARIMA**: TSLib lineal, `ParallelARIMAWorkflow`, y **Spark + statsmodels** sobre series sintéticas y CSV del directorio `sampler/datasets/` (véase `sampler/README.md` en la raíz TT). Se reportan speedups y un **N\*** aproximado donde el speedup frente al lineal alcanza ≥ 1.
+- **ARIMA paralelo** (Spark, `ParallelARIMAWorkflow`) vs **ARIMA lineal** (statsmodels en proceso).
+- Figuras: tiempos de ajuste (eje Y logarítmico para comparar órdenes de magnitud), barras RMSE/MAE/MAPE en holdout, y |error| por horizonte. Opción de rejilla `grid_mode` para el workflow paralelo (`docs/ARIMA_METODOLOGIA_ROADMAP.md`).
+
+Ya **no** se incluyen en esa pestaña: gráfico de speedup frente a TSLib lineal, bloque ACF/PACF de benchmark, resumen textual tipo N\*, ni la sección “secuencial vs paralelo interno” (`n_jobs` del `ARIMAModel`).

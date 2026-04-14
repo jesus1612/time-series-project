@@ -5,6 +5,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import logging
+import time
 import traceback
 from pathlib import Path
 
@@ -167,7 +168,78 @@ def server(input, output, session):
     
     # Initialize TSLib service
     tslib_service = TSLibService()
-    
+
+    # ARIMA comparison colors: lineal (TSLib) = rosa, paralelo (Spark) = verde
+    _COL_ARIMA_LINEAL = "#e879a8"
+    _COL_ARIMA_PARALELO = "#2A9D8F"
+
+    def _style_forecast_axes(ax, fig):
+        ax.grid(True, alpha=0.3)
+        ax.set_facecolor("#2d2d2d")
+        fig.patch.set_facecolor("#1a1a1a")
+        ax.tick_params(colors="white")
+        ax.xaxis.label.set_color("white")
+        ax.yaxis.label.set_color("white")
+        ax.title.set_color("white")
+        for s in ("bottom", "left"):
+            ax.spines[s].set_color("white")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    def _figure_arima_lineal_vs_paralelo():
+        """Histórico + pronóstico TSLib lineal + pronóstico Spark (misma escala)."""
+        state = app_state.get()
+        df = uploaded_dataframe.get()
+        value_col = state.get("value_column")
+        forecast_results = state.get("forecast_results") or {}
+        parallel_forecast_results = state.get("parallel_forecast_results") or {}
+        if not state.get("analysis_complete") or df is None or value_col is None:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.text(0.5, 0.5, "Ejecuta el análisis primero", ha="center", va="center", color="white")
+            ax.axis("off")
+            _style_forecast_axes(ax, fig)
+            return fig
+
+        if pd.api.types.is_numeric_dtype(df[value_col]):
+            historical = df[value_col].values
+        else:
+            historical = tslib_service.convert_to_numeric(df, value_col).values
+        historical = np.asarray(historical, dtype=float)
+
+        fc_lin = forecast_results.get("forecast", [])
+        fc_par = parallel_forecast_results.get("forecast", [])
+        lo_l = forecast_results.get("lower_bound")
+        up_l = forecast_results.get("upper_bound")
+        lo_p = parallel_forecast_results.get("lower_bound")
+        up_p = parallel_forecast_results.get("upper_bound")
+
+        n_hist = len(historical)
+        n_lin = len(fc_lin)
+        n_par = len(fc_par)
+        n_fore = max(n_lin, n_par)
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(range(n_hist), historical, label="Histórico", color="#00d4aa", linewidth=1.5)
+
+        if n_lin:
+            x_lin = range(n_hist, n_hist + n_lin)
+            ax.plot(x_lin, fc_lin, label="Pronóstico lineal (TSLib)", color=_COL_ARIMA_LINEAL, linewidth=2, linestyle="--")
+            if lo_l is not None and up_l is not None and len(lo_l) >= n_lin:
+                ax.fill_between(x_lin, lo_l[:n_lin], up_l[:n_lin], alpha=0.2, color=_COL_ARIMA_LINEAL)
+        if n_par:
+            x_par = range(n_hist, n_hist + n_par)
+            ax.plot(x_par, fc_par, label="Pronóstico paralelo (Spark)", color=_COL_ARIMA_PARALELO, linewidth=2, linestyle="--")
+            if lo_p is not None and up_p is not None and len(lo_p) >= n_par:
+                ax.fill_between(x_par, lo_p[:n_par], up_p[:n_par], alpha=0.2, color=_COL_ARIMA_PARALELO)
+
+        ax.set_xlabel("Tiempo")
+        ax.set_ylabel("Valor")
+        ax.set_title("Pronóstico: lineal (rosa) vs paralelo (verde)", fontsize=12, fontweight="bold")
+        ax.legend(loc="best", facecolor="#2d2d2d", edgecolor="white", labelcolor="white")
+        _style_forecast_axes(ax, fig)
+        plt.tight_layout()
+        return fig
+
     # Stepper header renderer
     @render.ui
     def stepper_header():
@@ -1074,25 +1146,36 @@ def server(input, output, session):
             return ui.div(ui.tags.p("No hay métricas disponibles", class_="text-muted"))
         
         metrics = tslib_service.get_model_metrics(fitted_model)
-        
-        return ui.div(
+        em = state.get("execution_metadata") or {}
+        t_lin = em.get("time_linear_fit_s")
+
+        cards = [
             create_metric_card(
                 f"{metrics.get('aic', 0):.2f}" if metrics.get('aic') else "N/A",
-                "AIC",
-                "📊"
+                "AIC (lineal)",
+                "📊",
             ),
             create_metric_card(
                 f"{metrics.get('bic', 0):.2f}" if metrics.get('bic') else "N/A",
-                "BIC",
-                "📊"
+                "BIC (lineal)",
+                "📊",
             ),
             create_metric_card(
                 metrics.get('order', 'N/A'),
-                "Orden",
-                "⚙️"
+                "Orden (lineal)",
+                "⚙️",
             ),
-            class_="metrics-grid"
-        )
+        ]
+        if t_lin is not None:
+            cards.append(
+                create_metric_card(
+                    f"{float(t_lin):.3f}",
+                    "Tiempo ajuste lineal (s)",
+                    "⏱",
+                )
+            )
+
+        return ui.div(*cards, class_="metrics-grid")
     
     @render.plot
     def forecast_plot():
@@ -1107,6 +1190,17 @@ def server(input, output, session):
         df = uploaded_dataframe.get()
         value_col = state.get("value_column")
         forecast_results = state.get("forecast_results")
+        parallel_forecast_results = state.get("parallel_forecast_results")
+        mt = state.get("model_type")
+
+        if (
+            mt == "ARIMA"
+            and forecast_results
+            and parallel_forecast_results
+            and forecast_results.get("forecast")
+            and parallel_forecast_results.get("forecast")
+        ):
+            return _figure_arima_lineal_vs_paralelo()
         
         if not forecast_results or df is None:
             fig, ax = plt.subplots(figsize=(10, 4))
@@ -1176,8 +1270,24 @@ def server(input, output, session):
         forecast = forecast_results.get('forecast', [])
         lower = forecast_results.get('lower_bound')
         upper = forecast_results.get('upper_bound')
-        
-        # Create table data
+        pr = state.get("parallel_forecast_results") or {}
+        pfc = pr.get("forecast", [])
+
+        if (
+            state.get("model_type") == "ARIMA"
+            and pfc
+            and forecast
+        ):
+            table_data = []
+            n = min(len(forecast), len(pfc))
+            for i in range(n):
+                vl = forecast[i]
+                vp = pfc[i]
+                row = [f"t+{i+1}", f"{vl:.4f}", f"{vp:.4f}", f"{abs(vl - vp):.4f}"]
+                table_data.append(row)
+            headers = ["Paso", "Lineal (TSLib)", "Paralelo (Spark)", "|L−P|"]
+            return create_data_table(table_data, headers=headers)
+
         table_data = []
         for i, val in enumerate(forecast, 1):
             row = [f"t+{i}", f"{val:.4f}"]
@@ -1190,6 +1300,38 @@ def server(input, output, session):
             headers.extend(["Límite Inferior", "Límite Superior"])
         
         return create_data_table(table_data, headers=headers)
+
+    @render.plot
+    def forecast_diff_horizon_plot():
+        """|lineal − paralelo| por horizonte (solo ARIMA con ambas rutas)."""
+        state = app_state.get()
+        if not state.get("analysis_complete") or state.get("model_type") != "ARIMA":
+            fig, ax = plt.subplots(figsize=(8, 3))
+            ax.text(0.5, 0.5, "Solo aplica con ARIMA y ambas rutas", ha="center", va="center", color="white")
+            ax.axis("off")
+            _style_forecast_axes(ax, fig)
+            return fig
+        fr = state.get("forecast_results") or {}
+        pr = state.get("parallel_forecast_results") or {}
+        a = np.asarray(fr.get("forecast") or [], dtype=float)
+        b = np.asarray(pr.get("forecast") or [], dtype=float)
+        n = min(len(a), len(b))
+        if n == 0:
+            fig, ax = plt.subplots(figsize=(8, 3))
+            ax.text(0.5, 0.5, "Sin datos comparables", ha="center", va="center", color="white")
+            ax.axis("off")
+            _style_forecast_axes(ax, fig)
+            return fig
+        d = np.abs(a[:n] - b[:n])
+        x = np.arange(1, n + 1)
+        fig, ax = plt.subplots(figsize=(9, 3))
+        ax.bar(x, d, color=_COL_ARIMA_LINEAL, alpha=0.85, edgecolor="#444")
+        ax.set_xlabel("Horizonte (t+h)")
+        ax.set_ylabel("|lineal − paralelo|")
+        ax.set_title("Diferencia entre pronósticos por paso", color="white")
+        _style_forecast_axes(ax, fig)
+        plt.tight_layout()
+        return fig
     
     @render.plot
     def residuals_plot():
@@ -1352,7 +1494,7 @@ def server(input, output, session):
     @render.ui
     def linear_model_title():
         """Show linear model title."""
-        return ui.tags.h4("Modelo lineal", class_="mb-3")
+        return ui.tags.h4("Modelo lineal (TSLib)", class_="mb-3")
     
     @render.ui
     def parallel_model_section():
@@ -1391,15 +1533,17 @@ def server(input, output, session):
                 ui.output_ui("parallel_metrics_cards"),
                 class_="mb-4"
             ),
-            # Parallel forecast plot
             ui.div(
-                ui.tags.h5("Pronóstico (paralelo):"),
+                ui.tags.h5("Pronóstico paralelo (Spark)"),
+                ui.tags.p(
+                    "Con ARIMA y ambas rutas, el gráfico coincide con «Pronóstico» arriba (rosa = lineal, verde = paralelo).",
+                    class_="text-muted small mb-2",
+                ),
                 ui.output_plot("parallel_forecast_plot", height="400px"),
                 class_="mb-4"
             ),
-            # Parallel forecast table
             ui.div(
-                ui.tags.h5("Valores del pronóstico (paralelo):"),
+                ui.tags.h5("Detalle tabla paralela"),
                 ui.output_ui("parallel_forecast_table_ui"),
                 class_="mb-4"
             )
@@ -1414,20 +1558,27 @@ def server(input, output, session):
         
         if not parallel_workflow:
             return ui.div(ui.tags.p("No hay información disponible", class_="text-muted"))
-        
+
         # Get metrics
         metrics = tslib_service.get_parallel_model_metrics(parallel_workflow, model_type=model_type)
         order = metrics.get('order', 'N/A')
         backend = metrics.get("backend", "N/A")
         backend_desc = "Spark distribuido." if backend == "spark" else "N/A"
-        
-        return ui.div(
-            ui.tags.p(f"Tipo de Modelo: {model_type} Paralelo"),
+        em = state.get("execution_metadata") or {}
+        t_lin = em.get("time_linear_fit_s")
+        t_par = em.get("time_parallel_fit_s")
+
+        lines = [
+            ui.tags.p(f"Tipo de modelo: {model_type} (paralelo)"),
             ui.tags.p(f"Orden: {order}"),
-            ui.tags.p(f"Backend: {backend}"),
-            ui.tags.p(f"Detalle backend: {backend_desc}"),
-            class_="text-muted"
-        )
+            ui.tags.p(f"Backend: {backend} — {backend_desc}"),
+        ]
+        if t_lin is not None:
+            lines.append(ui.tags.p(f"Tiempo ajuste lineal (TSLib): {float(t_lin):.3f} s"))
+        if t_par is not None:
+            lines.append(ui.tags.p(f"Tiempo ajuste paralelo (Spark): {float(t_par):.3f} s"))
+
+        return ui.div(*lines, class_="text-muted")
     
     @render.ui
     def parallel_metrics_cards():
@@ -1444,48 +1595,41 @@ def server(input, output, session):
         
         cards = []
         
-        # Order card
         if metrics.get('order'):
             cards.append(create_metric_card(
                 metrics.get('order', 'N/A'),
-                "Orden",
+                "Orden (paralelo)",
                 "⚙️"
             ))
-        
-        # MAE card
-        if metrics.get('mae') is not None:
+        if metrics.get("aic") is not None:
             cards.append(create_metric_card(
-                f"{metrics.get('mae', 0):.4f}",
-                "MAE",
-                "📊"
+                f"{float(metrics['aic']):.2f}",
+                "AIC (paralelo)",
+                "📊",
             ))
-        
-        # RMSE card
-        if metrics.get('rmse') is not None:
+        if metrics.get("bic") is not None:
             cards.append(create_metric_card(
-                f"{metrics.get('rmse', 0):.4f}",
-                "RMSE",
-                "📊"
-            ))
-        
-        # MAPE card
-        if metrics.get('mape') is not None:
-            cards.append(create_metric_card(
-                f"{metrics.get('mape', 0):.4f}",
-                "MAPE",
-                "📊"
+                f"{float(metrics['bic']):.2f}",
+                "BIC (paralelo)",
+                "📊",
             ))
         if comparison:
             cards.append(create_metric_card(
                 f"{comparison.get('mae_diff', 0):.4f}",
-                "MAE Dif. L/P",
-                "↔️"
+                "MAE |L−P|",
+                "↔️",
             ))
             cards.append(create_metric_card(
                 f"{comparison.get('rmse_diff', 0):.4f}",
-                "RMSE Dif. L/P",
-                "↔️"
+                "RMSE (L vs P)",
+                "↔️",
             ))
+            if comparison.get("mape_diff") is not None:
+                cards.append(create_metric_card(
+                    f"{comparison.get('mape_diff', 0):.2f}",
+                    "MAPE* dif.",
+                    "↔️",
+                ))
         
         if not cards:
             return ui.div(ui.tags.p("No hay métricas disponibles", class_="text-muted"))
@@ -1494,7 +1638,7 @@ def server(input, output, session):
     
     @render.plot
     def parallel_forecast_plot():
-        """Render parallel forecast plot"""
+        """Misma vista que el pronóstico principal cuando hay lineal + paralelo (ARIMA)."""
         state = app_state.get()
         if not state.get("analysis_complete"):
             fig, ax = plt.subplots(figsize=(10, 4))
@@ -1503,11 +1647,20 @@ def server(input, output, session):
             ax.set_facecolor('#2d2d2d')
             fig.patch.set_facecolor('#1a1a1a')
             return fig
-        
+
+        if (
+            state.get("model_type") == "ARIMA"
+            and state.get("forecast_results")
+            and state.get("parallel_forecast_results")
+            and (state.get("forecast_results") or {}).get("forecast")
+            and (state.get("parallel_forecast_results") or {}).get("forecast")
+        ):
+            return _figure_arima_lineal_vs_paralelo()
+
         df = uploaded_dataframe.get()
         value_col = state.get("value_column")
         parallel_forecast_results = state.get("parallel_forecast_results")
-        
+
         if not parallel_forecast_results or df is None:
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.text(0.5, 0.5, 'No hay pronóstico paralelo disponible', ha='center', va='center', color='white')
@@ -1515,17 +1668,12 @@ def server(input, output, session):
             ax.set_facecolor('#2d2d2d')
             fig.patch.set_facecolor('#1a1a1a')
             return fig
-        
-        # Plot historical data + forecast
+
         fig, ax = plt.subplots(figsize=(10, 4))
-        
-        # Convert to numeric if needed
         if pd.api.types.is_numeric_dtype(df[value_col]):
             historical = df[value_col].values
         else:
             historical = tslib_service.convert_to_numeric(df, value_col).values
-        
-        # Handle missing values in historical data (forward fill for plotting)
         if np.any(np.isnan(historical)):
             mask = np.isnan(historical)
             indices = np.arange(len(historical))
@@ -1533,41 +1681,21 @@ def server(input, output, session):
                 historical[mask] = np.interp(indices[mask], indices[~mask], historical[~mask])
             else:
                 historical = np.zeros_like(historical)
-        
+
         forecast = parallel_forecast_results.get('forecast', [])
         lower = parallel_forecast_results.get('lower_bound')
         upper = parallel_forecast_results.get('upper_bound')
-        
         n_hist = len(historical)
-        n_fore = len(forecast)
-        
-        # Plot historical
+        forecast_x = range(n_hist, n_hist + len(forecast))
         ax.plot(range(n_hist), historical, label='Histórico', color='#00d4aa', linewidth=1.5)
-        
-        # Plot forecast
-        forecast_x = range(n_hist, n_hist + n_fore)
-        ax.plot(forecast_x, forecast, label='Pronóstico (Paralelo)', color='#ff6b6b', linewidth=1.5, linestyle='--')
-        
-        # Plot confidence intervals if available
+        ax.plot(forecast_x, forecast, label='Pronóstico paralelo', color=_COL_ARIMA_PARALELO, linewidth=1.5, linestyle='--')
         if lower is not None and upper is not None:
-            ax.fill_between(forecast_x, lower, upper, alpha=0.3, color='#ff6b6b', label='IC 95%')
-        
+            ax.fill_between(forecast_x, lower, upper, alpha=0.3, color=_COL_ARIMA_PARALELO, label='IC 95%')
         ax.set_xlabel('Tiempo')
         ax.set_ylabel('Valor')
-        ax.set_title('Pronóstico de Serie Temporal (Ruta Paralela)', fontsize=12, fontweight='bold')
+        ax.set_title('Pronóstico — ruta paralela', fontsize=12, fontweight='bold')
         ax.legend(loc='best', facecolor='#2d2d2d', edgecolor='white', labelcolor='white')
-        ax.grid(True, alpha=0.3)
-        ax.set_facecolor('#2d2d2d')
-        fig.patch.set_facecolor('#1a1a1a')
-        ax.tick_params(colors='white')
-        ax.xaxis.label.set_color('white')
-        ax.yaxis.label.set_color('white')
-        ax.title.set_color('white')
-        ax.spines['bottom'].set_color('white')
-        ax.spines['left'].set_color('white')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        
+        _style_forecast_axes(ax, fig)
         plt.tight_layout()
         return fig
     
@@ -1577,6 +1705,18 @@ def server(input, output, session):
         state = app_state.get()
         if not state.get("analysis_complete"):
             return ui.div(ui.tags.p("Ejecuta el análisis primero", class_="text-muted"))
+
+        if (
+            state.get("model_type") == "ARIMA"
+            and (state.get("forecast_results") or {}).get("forecast")
+            and (state.get("parallel_forecast_results") or {}).get("forecast")
+        ):
+            return ui.div(
+                ui.tags.p(
+                    "La tabla comparativa lineal / paralelo / |L−P| está en la sección «Valores del pronóstico» arriba.",
+                    class_="text-muted small",
+                )
+            )
         
         parallel_forecast_results = state.get("parallel_forecast_results")
         if not parallel_forecast_results:
@@ -1869,6 +2009,7 @@ def server(input, output, session):
             new_state["runtime_warnings"] = []
             app_state.set(new_state)
 
+            t_lin0 = time.perf_counter()
             fitted_model, w_fit = run_with_recorded_warnings(
                 lambda: tslib_service.fit_model(
                     data=data,
@@ -1878,6 +2019,7 @@ def server(input, output, session):
                     validation_report=quality_report,
                 )
             )
+            time_linear_fit_s = float(time.perf_counter() - t_lin0)
             runtime_msgs.extend(w_fit)
             effective_order = None
             if hasattr(fitted_model, "order"):
@@ -1905,7 +2047,9 @@ def server(input, output, session):
             new_state = app_state.get().copy()
             new_state["execution_log"].append(f"Ajustando modelo paralelo {model_type} (Spark)...")
             app_state.set(new_state)
+            time_parallel_fit_s = None
             try:
+                t_par0 = time.perf_counter()
                 parallel_workflow, parallel_forecast_results = tslib_service.fit_parallel_model_spark(
                     data=data,
                     model_type=model_type,
@@ -1913,6 +2057,7 @@ def server(input, output, session):
                     steps=forecast_steps,
                     validation_report=quality_report,
                 )
+                time_parallel_fit_s = float(time.perf_counter() - t_par0)
                 new_state = app_state.get().copy()
                 backend = getattr(parallel_workflow, "backend_", "desconocido")
                 new_state["execution_log"].append(f"✓ Modelo paralelo completado (backend: {backend})")
@@ -1946,6 +2091,8 @@ def server(input, output, session):
                 "parallel_backend": getattr(parallel_workflow, "backend_", None) if parallel_workflow else None,
                 "forecast_comparison": forecast_comparison,
                 "runtime_warnings": runtime_msgs,
+                "time_linear_fit_s": time_linear_fit_s,
+                "time_parallel_fit_s": time_parallel_fit_s,
             }
             new_state["analysis_complete"] = True
             for msg in runtime_msgs:

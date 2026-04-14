@@ -26,10 +26,10 @@ flowchart TB
     subgraph UI["Paso 4 — interfaz Resultados"]
       MI[Información del modelo]
       WN[Avisos del motor]
-      MC[Métricas lineales]
-      FP[Pronóstico y tabla lineal]
+      MC[Métricas lineales y comparación L/P]
+      FP[Pronóstico: histórico + lineal; ARIMA+Spark: dos curvas, tabla, |L−P| por h]
       DG[Diagnósticos residuales]
-      PP[Sección paralelo Spark]
+      PP[Paralelo Spark: tiempos fit, AIC/BIC paralelos, métricas diferencia]
     end
   end
 
@@ -55,11 +55,11 @@ flowchart TB
 
 ## Contenido mostrado
 
-- **Información del modelo**: tipo y orden efectivo del ajuste lineal.
+- **Información del modelo**: tipo y orden efectivo del ajuste lineal; tarjetas lineales incluyen **tiempo de ajuste lineal (s)** cuando está en `execution_metadata`.
 - **Avisos del motor (última ejecución)**: mensajes capturados de `warnings` en el driver (ajuste lineal, pronóstico) y avisos devueltos desde los ejecutores Spark durante el ajuste paralelo (p. ej. no estacionariedad en AR/MA). No sustituyen la validación de datos del paso 1.
-- **Métricas y pronóstico lineal**: AIC/BIC donde aplique, gráfico y tabla de pronóstico, ACF de residuos.
+- **Métricas y pronóstico**: AIC/BIC lineales; con ARIMA + paralelo, **gráfico combinado** (histórico + dos pronósticos), **tabla comparativa** y **|L−P| por horizonte**; ACF de residuos del modelo lineal.
 - **Diagnósticos ampliados** (`services/evaluation_plots.py`): histograma + **Q-Q** de residuos (normalidad aproximada) y serie de **residuos estandarizados** con bandas ±2σ para outliers aparentes.
-- **Modelo paralelo (Spark)**: misma estructura comparativa cuando la ruta Spark completó; si falló, mensaje derivado del `execution_log`.
+- **Modelo paralelo (Spark)**: orden, AIC/BIC paralelos si existen, métricas de diferencia entre pronósticos, tiempo de ajuste paralelo; gráfico/tabla duplican la vista comparativa con el bloque lineal cuando aplica ARIMA; si Spark falló, mensaje desde `execution_log`.
 
 ### Guía breve de gráficas
 

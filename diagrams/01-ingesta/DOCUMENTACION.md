@@ -38,7 +38,7 @@ flowchart TB
   end
 
   subgraph TSLIB["TSLib — núcleo"]
-    L["Reglas: mín. 3 obs., máx. 10 % faltantes, sin inf"]
+    L["DataValidator + modelos: sin NaN ya impuesto por la app; otras reglas (longitud, inf, calidad)"]
     M["Modelos y ACF-PACF sobre serie completa"]
   end
 
@@ -72,18 +72,20 @@ flowchart TB
 
 ## Diagrama 2 — Política de faltantes (sin imputación en la app)
 
+**Corrección lógica:** en el asistente Shiny no existe una secuencia «primero sin NaN y luego el validador decide si hay más del 10 %». Si **no** hay NaN, la proporción de faltantes es **0 %** por definición; el umbral del **10 %** no actúa como segunda puerta en ese camino. El flujo real es: (1) la app fuerza **rechazo con cualquier NaN**; (2) con **cero NaN**, `DataValidator.validate` sigue pudiendo rechazar por **otras** reglas (longitud, infinitos, calidad, etc.). El **10 %** sigue definido en TSLib para **política de faltantes en la librería** (p. ej. scripts que llaman al validador sin el corte estricto de la app) y para mensajes del validador cuando aún hubiera faltantes en otros contextos.
+
 ```mermaid
 flowchart TD
-  INICIO([Serie numérica extraída]) --> ANY{¿Algún NaN?}
+  INICIO([Serie numérica extraída]) --> ANY{¿Algún NaN en el vector?}
 
   ANY -->|sí| APP_RECHAZO["App: validación no válida — completar la serie o usar otro archivo"]
-  ANY -->|no| RATIO{DataValidator: proporción faltantes según reglas internas}
+  ANY -->|no| DV["DataValidator.validate\n(longitud, inf, outliers, quality_report…)\nnota: sin NaN → ratio faltantes = 0 %"]
 
-  RATIO -->|más del 10 %| RECHAZO["DataValidator: no válida — demasiados faltantes"]
-  RATIO -->|0 %| OK["Serie completa"]
-  OK --> FIT["Exploración / ACF-PACF / modelado"]
-  RECHAZO --> FIN_MAL([No continuar])
-  APP_RECHAZO --> FIN_MAL
+  DV -->|is_valid = false| RECHAZO["No válida — ver issues del validador"]
+  DV -->|is_valid = true| OK["Continuar: exploración / ACF-PACF / modelado"]
+
+  APP_RECHAZO --> FIN_MAL([No continuar])
+  RECHAZO --> FIN_MAL
 
   style APP_RECHAZO fill:#5c1f1f,color:#fff
   style RECHAZO fill:#5c1f1f,color:#fff
@@ -91,9 +93,10 @@ flowchart TD
 
 | Situación | Comportamiento en la app |
 |-----------|---------------------------|
-| Cualquier NaN en la columna de valores | **No válida**: mensaje explícito; no se ejecuta exploración ni modelado. |
-| Sin NaN, validador OK | Se continúa con exploración y modelos. |
-| Más del 10 % NaN (solo si el validador llegara a evaluar) | Inválida según DataValidator. |
+| **≥ 1 NaN** en la columna de valores (tras conversión numérica) | **No válida** siempre: mensaje explícito; no exploración ni modelado. |
+| **0 NaN** y `DataValidator` devuelve `is_valid` | Se continúa. |
+| **0 NaN** y `DataValidator` devuelve `is_valid = false` | No válida por otras reglas (p. ej. longitud mínima, infinitos). |
+| **> 10 % NaN** (solo TSLib / pipelines sin corte app) | Regla del validador en librería; **en esta app** nunca se llega aquí con NaN porque el chequeo anterior ya rechazó. |
 
 
 ---

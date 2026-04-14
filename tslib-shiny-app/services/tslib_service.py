@@ -818,33 +818,22 @@ class TSLibService:
                     if "max_p" in cfg and "max_q" in cfg:
                         metrics["max_p_q"] = f"max_p={cfg['max_p']}, max_q={cfg['max_q']}"
 
-            if hasattr(workflow, "parameters_"):
-                metrics["parameters"] = workflow.parameters_
+            if hasattr(workflow, "parameters_") and workflow.parameters_:
+                pp = workflow.parameters_
+                if isinstance(pp, dict):
+                    if pp.get("aic") is not None:
+                        metrics["aic"] = float(pp["aic"])
+                    if pp.get("bic") is not None:
+                        metrics["bic"] = float(pp["bic"])
+                metrics["parameters"] = pp
             if hasattr(workflow, "backend_"):
                 metrics["backend"] = workflow.backend_
-            if hasattr(workflow, "data") and len(workflow.data) > 0:
-                data = workflow.data
-                mean_val = np.mean(data)
-                std_val = np.std(data)
-                metrics["mae"] = std_val * 0.1
-                metrics["rmse"] = std_val * 0.15
-                metrics["mape"] = (std_val / abs(mean_val)) * 100 if mean_val != 0 else 5.0
-            else:
-                metrics["mae"] = 0.5
-                metrics["rmse"] = 0.75
-                metrics["mape"] = 5.0
 
             return metrics
 
         except Exception as e:
             logger.exception("Error extracting parallel ARIMA metrics: %s", e)
-            # Return default dummy metrics on error
-            return {
-                'order': 'ARIMA(1,1,1)',
-                'mae': 0.5,
-                'rmse': 0.75,
-                'mape': 5.0
-            }
+            return {"order": "ARIMA(1,1,1)"}
 
     def get_parallel_model_metrics(self, workflow: Any, model_type: str) -> Dict[str, Any]:
         """Metrics for Spark parallel workflows across all model types."""
@@ -867,15 +856,18 @@ class TSLibService:
         return metrics
 
     def compare_forecasts(self, linear_forecast: List[float], parallel_forecast: List[float]) -> Dict[str, float]:
-        """Precision proxy: distance between linear and parallel forecasts."""
+        """Distance between linear and parallel forecast vectors (same horizon)."""
         a = np.asarray(linear_forecast, dtype=float)
         b = np.asarray(parallel_forecast, dtype=float)
         n = min(len(a), len(b))
         if n == 0:
-            return {"mae_diff": 0.0, "rmse_diff": 0.0}
+            return {"mae_diff": 0.0, "rmse_diff": 0.0, "mape_diff": 0.0}
         d = a[:n] - b[:n]
+        denom = np.maximum(np.abs(a[:n]), 1e-12)
+        mape_like = float(np.mean(np.abs(d) / denom) * 100.0)
         return {
             "mae_diff": float(np.mean(np.abs(d))),
             "rmse_diff": float(np.sqrt(np.mean(d ** 2))),
+            "mape_diff": mape_like,
         }
 

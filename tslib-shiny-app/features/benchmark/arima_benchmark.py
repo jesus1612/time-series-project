@@ -1,6 +1,5 @@
 """
-ARIMA benchmark suite: TSLib linear, ParallelARIMAWorkflow, Spark+statsmodels, and
-statsmodels local (in-process reference for evaluation only — not a production alternative).
+ARIMA benchmark: compare **ARIMA paralelo** (Spark workflow) vs **ARIMA lineal** (statsmodels).
 """
 from __future__ import annotations
 
@@ -22,27 +21,31 @@ from tslib.models.arima_model import ARIMAModel
 
 DEFAULT_N_GRID = [100, 500, 1000, 2000, 5000, 10000]
 
-# Five-tone palette: TSLib, ParallelARIMAWorkflow, Spark+statsmodels, statsmodels ref, neutrals
-COLOR_TSLIB = "#E07A5F"
-COLOR_WORKFLOW = "#2A9D8F"
-COLOR_SPARK_SM = "#457B9D"
-COLOR_SM_REF = "#E9C46A"
+# Two-route palette: paralelo = green, lineal (statsmodels) = pink
+COLOR_ARIMA_PARALELO = "#2A9D8F"
+COLOR_ARIMA_LINEAL = "#e879a8"
 COLOR_NEUTRAL = "#94A3B8"
 
-BENCHMARK_PALETTE = (COLOR_TSLIB, COLOR_WORKFLOW, COLOR_SPARK_SM, COLOR_SM_REF)
+# Public labels (Spanish)
+LABEL_ARIMA_PARALELO = "ARIMA paralelo"
+LABEL_ARIMA_LINEAL = "ARIMA lineal"
+
+# Backward-compatible names for imports (server / tests)
+COLOR_WORKFLOW = COLOR_ARIMA_PARALELO
+COLOR_TSLIB = COLOR_ARIMA_LINEAL
+LABEL_PARALLEL_WORKFLOW = LABEL_ARIMA_PARALELO
+LABEL_TSLIB_LINEAR = LABEL_ARIMA_LINEAL
+LABEL_STATSMODELS_LOCAL = LABEL_ARIMA_LINEAL
+LABEL_SPARK_STATSMODELS = "Spark · statsmodels"
+COLOR_SM_REF = COLOR_ARIMA_LINEAL
+COLOR_SPARK_SM = "#457B9D"
+
+BENCHMARK_PALETTE = (COLOR_ARIMA_PARALELO, COLOR_ARIMA_LINEAL)
 
 COLOR_BY_METRIC_KEY = {
-    "tslib_linear": COLOR_TSLIB,
-    "parallel_workflow": COLOR_WORKFLOW,
-    "spark_statsmodels": COLOR_SPARK_SM,
-    "statsmodels_local": COLOR_SM_REF,
+    "parallel_workflow": COLOR_ARIMA_PARALELO,
+    "statsmodels_local": COLOR_ARIMA_LINEAL,
 }
-
-# Short legend labels (plots + UI; avoid long parentheticals)
-LABEL_TSLIB_LINEAR = "TSLib lineal"
-LABEL_PARALLEL_WORKFLOW = "ParallelARIMAWorkflow"
-LABEL_SPARK_STATSMODELS = "Spark · statsmodels"
-LABEL_STATSMODELS_LOCAL = "statsmodels ref."
 
 
 def default_sampler_datasets_dir() -> Path:
@@ -171,12 +174,9 @@ class ARIMABenchmarkSuite:
                 y[t] = 0.8 * y[t - 1] + eps[t]
             return y
 
-        linear_times: Dict[int, float] = {}
         workflow_times: Dict[int, float] = {}
-        spark_sm_times: Dict[int, float] = {}
         sm_local_times: Dict[int, float] = {}
         workflow_ok: Dict[int, bool] = {}
-        spark_sm_ok: Dict[int, bool] = {}
         sm_local_ok: Dict[int, bool] = {}
 
         spark = None
@@ -191,13 +191,6 @@ class ARIMABenchmarkSuite:
 
         for n in n_obs_grid:
             data = synth(n)
-
-            linear_times[n] = _time_call(
-                lambda: ARIMAModel(
-                    order=order, auto_select=False, validation=False, n_jobs=1
-                ).fit(data),
-                repeats=repeats,
-            )
 
             try:
 
@@ -227,58 +220,21 @@ class ARIMABenchmarkSuite:
                 except Exception:
                     workflow_times[n] = float("nan")
                     workflow_ok[n] = False
-
-                try:
-
-                    def _sm():
-                        _spark_statsmodels_forecast(spark, data, order, min(5, max(1, n // 20)))
-
-                    spark_sm_times[n] = _time_call(_sm, repeats=repeats)
-                    spark_sm_ok[n] = True
-                except Exception:
-                    spark_sm_times[n] = float("nan")
-                    spark_sm_ok[n] = False
             else:
                 workflow_times[n] = float("nan")
-                spark_sm_times[n] = float("nan")
                 workflow_ok[n] = False
-                spark_sm_ok[n] = False
-
-        speedup_sm_local = {
-            n: (linear_times[n] / sm_local_times[n])
-            for n in n_obs_grid
-            if sm_local_ok.get(n) and sm_local_times[n] > 0
-        }
-
-        speedup_w = {
-            n: (linear_times[n] / workflow_times[n])
-            for n in n_obs_grid
-            if workflow_ok.get(n) and workflow_times[n] > 0
-        }
-        speedup_sm = {
-            n: (linear_times[n] / spark_sm_times[n])
-            for n in n_obs_grid
-            if spark_sm_ok.get(n) and spark_sm_times[n] > 0
-        }
 
         return {
             "n_obs_grid": n_obs_grid,
             "order": order,
-            "linear_times": linear_times,
             "workflow_times": workflow_times,
-            "spark_statsmodels_times": spark_sm_times,
             "statsmodels_local_times": sm_local_times,
             "workflow_ok": workflow_ok,
-            "spark_statsmodels_ok": spark_sm_ok,
             "statsmodels_local_ok": sm_local_ok,
-            "speedup_linear_vs_workflow": speedup_w,
-            "speedup_linear_vs_spark_sm": speedup_sm,
-            "speedup_linear_vs_statsmodels_local": speedup_sm_local,
-            "crossover_workflow": self.find_crossover_point(speedup_w, threshold=1.0),
-            "crossover_spark_sm": self.find_crossover_point(speedup_sm, threshold=1.0),
-            "crossover_statsmodels_local": self.find_crossover_point(
-                speedup_sm_local, threshold=1.0
-            ),
+            "arima_paralelo_times": workflow_times,
+            "arima_lineal_times": sm_local_times,
+            # Legacy keys for older figure code paths
+            "linear_times": sm_local_times,
         }
 
     @staticmethod
@@ -333,9 +289,6 @@ class ARIMABenchmarkSuite:
 
         metrics: Dict[str, Dict[str, float]] = {}
 
-        pred_lin = _linear_fit_predict(train, order, horizon)
-        metrics["tslib_linear"] = self._error_block(actual, pred_lin)
-
         try:
             pred_sm_loc = statsmodels_arima_forecast(train, order, horizon)
             m = min(len(np.asarray(actual)), len(np.asarray(pred_sm_loc).ravel()))
@@ -369,18 +322,8 @@ class ARIMABenchmarkSuite:
                 metrics["parallel_workflow"] = self._error_block(actual, pred_w)
             except Exception as e:
                 metrics["parallel_workflow"] = {"error": str(e)}
-            try:
-                pred_sm = np.array(
-                    _spark_statsmodels_forecast(spark, train, order, horizon), dtype=float
-                )
-                if len(pred_sm) >= len(actual):
-                    pred_sm = pred_sm[: len(actual)]
-                metrics["spark_statsmodels"] = self._error_block(actual, pred_sm)
-            except Exception as e:
-                metrics["spark_statsmodels"] = {"error": str(e)}
         else:
             metrics["parallel_workflow"] = {"error": "Spark not available"}
-            metrics["spark_statsmodels"] = {"error": "Spark not available"}
 
         return {
             "csv": csv_name,
@@ -417,32 +360,48 @@ class ARIMABenchmarkSuite:
 
     def build_performance_time_figure(self, perf: Dict[str, Any]) -> plt.Figure:
         """
-        Fit times vs N with log-scaled Y so ParallelARIMAWorkflow does not flatten other series.
+        Fit time vs sample size for the two benchmark routes.
+
+        **Eje Y logarítmico:** los tiempos de ajuste suelen crecer varios órdenes de magnitud
+        entre n pequeño y n grande; en escala lineal una curva domina y las demás se aplastan
+        abajo. El log en Y permite comparar ambas rutas en el mismo panel.
         """
         grid = perf["n_obs_grid"]
-        fig, ax0 = plt.subplots(figsize=(11, 4.5))
-        t_lin = [perf["linear_times"].get(n, float("nan")) for n in grid]
+        fig, ax0 = plt.subplots(figsize=(10, 4.2))
         t_wf = [perf["workflow_times"].get(n, float("nan")) for n in grid]
-        t_sm = [perf["spark_statsmodels_times"].get(n, float("nan")) for n in grid]
         t_sml = [perf.get("statsmodels_local_times", {}).get(n, float("nan")) for n in grid]
 
-        ax0.plot(grid, t_lin, "o-", label=LABEL_TSLIB_LINEAR, color=COLOR_TSLIB, markersize=6)
-        ax0.plot(grid, t_wf, "s-", label=LABEL_PARALLEL_WORKFLOW, color=COLOR_WORKFLOW, markersize=6)
-        ax0.plot(grid, t_sm, "^-", label=LABEL_SPARK_STATSMODELS, color=COLOR_SPARK_SM, markersize=6)
-        ax0.plot(grid, t_sml, "d-", label=LABEL_STATSMODELS_LOCAL, color=COLOR_SM_REF, markersize=6)
+        ax0.plot(
+            grid,
+            t_wf,
+            "s-",
+            label=LABEL_ARIMA_PARALELO,
+            color=COLOR_ARIMA_PARALELO,
+            markersize=7,
+            linewidth=2,
+        )
+        ax0.plot(
+            grid,
+            t_sml,
+            "o-",
+            label=LABEL_ARIMA_LINEAL,
+            color=COLOR_ARIMA_LINEAL,
+            markersize=6,
+            linewidth=2,
+        )
         ax0.set_xscale("log")
         ax0.set_yscale("log")
-        positive = [x for x in t_lin + t_wf + t_sm + t_sml if np.isfinite(x) and x > 0]
+        positive = [x for x in t_wf + t_sml if np.isfinite(x) and x > 0]
         if positive:
             ax0.set_ylim(bottom=max(1e-4, min(positive) * 0.5))
-        ax0.set_xlabel("n_obs (muestras sintéticas)")
-        ax0.set_ylabel("Tiempo de ajuste (s, escala log)")
-        ax0.set_title("Tiempo de ajuste vs n — eje Y log · verde = ParallelARIMAWorkflow")
+        ax0.set_xlabel("n_obs (serie sintética AR(1))")
+        ax0.set_ylabel("TIEMPOS DE AJUSTE (s, eje log)")
+        ax0.set_title("Tiempos de ajuste — escala log en Y para comparar órdenes de magnitud")
         ax0.grid(True, alpha=0.3)
         ax0.legend(
-            fontsize=8,
+            fontsize=9,
             loc="upper center",
-            bbox_to_anchor=(0.5, -0.22),
+            bbox_to_anchor=(0.5, -0.18),
             ncol=2,
             frameon=True,
             facecolor="#1a1a1a",
@@ -456,7 +415,7 @@ class ARIMABenchmarkSuite:
             for t in leg.get_texts():
                 t.set_color("white")
         plt.tight_layout()
-        plt.subplots_adjust(bottom=0.28)
+        plt.subplots_adjust(bottom=0.22)
         return fig
 
     def build_performance_speedup_figure(self, perf: Dict[str, Any]) -> plt.Figure:
@@ -637,19 +596,13 @@ class ARIMABenchmarkSuite:
 
         series: List[Tuple[str, np.ndarray, str, float]] = []
         try:
-            pred_lin = _linear_fit_predict(train, order, horizon)
-            series.append((LABEL_TSLIB_LINEAR, np.asarray(pred_lin, dtype=float).ravel(), COLOR_TSLIB, 1.1))
-        except Exception:
-            pred_lin = None
-
-        try:
             pred_sm = statsmodels_arima_forecast(train, order, horizon)
             series.append(
                 (
-                    LABEL_STATSMODELS_LOCAL,
+                    LABEL_ARIMA_LINEAL,
                     np.asarray(pred_sm, dtype=float).ravel(),
-                    COLOR_SM_REF,
-                    1.1,
+                    COLOR_ARIMA_LINEAL,
+                    1.8,
                 )
             )
         except Exception:
@@ -677,20 +630,12 @@ class ARIMABenchmarkSuite:
                 )
                 series.append(
                     (
-                        LABEL_PARALLEL_WORKFLOW,
+                        LABEL_ARIMA_PARALELO,
                         np.asarray(pred_w, dtype=float).ravel(),
-                        COLOR_WORKFLOW,
-                        2.0,
+                        COLOR_ARIMA_PARALELO,
+                        2.4,
                     )
                 )
-            except Exception:
-                pass
-            try:
-                pred_ss = np.array(
-                    _spark_statsmodels_forecast(spark, train, order, horizon), dtype=float
-                ).ravel()
-                if len(pred_ss) > 0:
-                    series.append((LABEL_SPARK_STATSMODELS, pred_ss, COLOR_SPARK_SM, 1.1))
             except Exception:
                 pass
 
@@ -704,18 +649,16 @@ class ARIMABenchmarkSuite:
         actual_m = actual[:m]
         x = np.arange(1, m + 1)
 
-        fig, ax = plt.subplots(figsize=(12, 4.2))
+        fig, ax = plt.subplots(figsize=(11, 4.0))
         for label, pred, color, lw in series:
             p = np.asarray(pred, dtype=float).ravel()[:m]
             err = np.abs(actual_m - p)
-            z = 4 if label == LABEL_PARALLEL_WORKFLOW else 2
+            z = 3 if label == LABEL_ARIMA_PARALELO else 2
             ax.plot(x, err, label=label, color=color, linewidth=lw, zorder=z, alpha=0.92)
 
         ax.set_xlabel("Horizonte (pasos fuera de muestra)")
         ax.set_ylabel("|error|")
-        ax.set_title(
-            f"|Error| por horizonte — {csv_name} · énfasis en {LABEL_PARALLEL_WORKFLOW} (línea gruesa)"
-        )
+        ax.set_title(f"|Error| por horizonte (holdout) — {csv_name}")
         ax.legend(
             loc="upper center",
             bbox_to_anchor=(0.5, -0.16),
@@ -739,10 +682,8 @@ class ARIMABenchmarkSuite:
         rmse, mae, mape = [], [], []
         bar_colors: List[str] = []
         for key, label in [
-            ("tslib_linear", LABEL_TSLIB_LINEAR),
-            ("parallel_workflow", LABEL_PARALLEL_WORKFLOW),
-            ("spark_statsmodels", LABEL_SPARK_STATSMODELS),
-            ("statsmodels_local", LABEL_STATSMODELS_LOCAL),
+            ("statsmodels_local", LABEL_ARIMA_LINEAL),
+            ("parallel_workflow", LABEL_ARIMA_PARALELO),
         ]:
             block = metrics.get(key) or {}
             if "error" in block:

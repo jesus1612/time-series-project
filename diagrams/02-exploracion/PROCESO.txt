@@ -5,7 +5,7 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
 • Objetivo del paso
   – Verificar que la serie seleccionada sea apta para modelar.
   – Entregar señales tempranas de estructura temporal (ACF, PACF, tendencia, estacionalidad).
-  – Dejar rastreable qué estrategia de imputación se usó en exploración cuando hay faltantes.
+  – No aplica rastro de imputación en exploración: con validación exitosa la columna de valores no tiene NaN en el flujo del asistente.
 
 • Flujo operativo
   – Usuario pulsa “Validar Datos”.

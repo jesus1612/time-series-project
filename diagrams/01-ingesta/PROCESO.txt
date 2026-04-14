@@ -14,7 +14,7 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
 • Valores faltantes (NaN) — sin imputación en la app
   – Si la columna de valores contiene **cualquier** NaN (incluidos los producidos al convertir texto no numérico), la validación **no es válida** y no se ejecuta exploración ni modelado.
   – Mensaje orientativo: completar la serie o usar otro archivo.
-  – El DataValidator de TSLib puede seguir aplicando su regla de máximo ~10 % faltantes cuando aplique; la app impone el corte estricto de cero NaN para el flujo del asistente.
+  – El umbral **~10 %** (`DEFAULT_MAX_MISSING_RATIO`) es regla del **DataValidator en TSLib** para datos que aún pueden llevar faltantes (p. ej. uso programático fuera del asistente). En **esta app**, después de extraer la serie, **cualquier NaN fuerza fallo** antes de dar por bueno el flujo: no hay “pasar con un 5 % de NaN”. Con cero NaN, el validador sigue evaluando longitud, infinitos y demás.
 
 • Umbral del validador (referencia)
   – DEFAULT_MAX_MISSING_RATIO en tslib.preprocessing.constants; por encima del umbral el validador marca serie inválida.

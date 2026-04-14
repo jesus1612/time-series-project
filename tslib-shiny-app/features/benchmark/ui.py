@@ -1,4 +1,4 @@
-# Benchmark tab — dashboard layout, compact controls, results only after run
+# Benchmark tab — ARIMA paralelo (Spark) vs ARIMA lineal (statsmodels)
 from shiny import ui
 from components.layout import create_card, create_form_group
 
@@ -10,17 +10,14 @@ def render_benchmark_ui() -> ui.Tag:
             {"class": "bench-hero"},
             ui.tags.h2("Benchmark ARIMA", class_="bench-hero-title"),
             ui.tags.p(
-                "Comparación TSLib frente a statsmodels: tiempos, errores de validación y diagnósticos "
-                "sobre un CSV del sampler.",
+                "Comparación de tiempos de ajuste, error en holdout y |error| por horizonte: "
+                "ARIMA paralelo (Spark) frente a ARIMA lineal (statsmodels).",
                 class_="bench-hero-lead",
             ),
             ui.div(
-                {"class": "bench-palette-key"},
-                ui.tags.span("TSLib", class_="bench-palette-swatch bench-palette-swatch--1"),
-                ui.tags.span("ParallelARIMAWorkflow", class_="bench-palette-swatch bench-palette-swatch--2"),
-                ui.tags.span("Spark · statsmodels", class_="bench-palette-swatch bench-palette-swatch--3"),
-                ui.tags.span("statsmodels ref.", class_="bench-palette-swatch bench-palette-swatch--4"),
-                ui.tags.span("Neutro / referencia", class_="bench-palette-swatch bench-palette-swatch--5"),
+                {"class": "bench-palette-key bench-palette-key--two"},
+                ui.tags.span("ARIMA paralelo", class_="bench-palette-swatch bench-palette-swatch--par"),
+                ui.tags.span("ARIMA lineal", class_="bench-palette-swatch bench-palette-swatch--lin"),
             ),
         ),
         ui.div(
@@ -29,7 +26,7 @@ def render_benchmark_ui() -> ui.Tag:
                 {"class": "col-lg-6"},
                 create_card(
                     title="Rendimiento",
-                    subtitle="Serie sintética por tamaño",
+                    subtitle="Serie sintética AR(1) por tamaño",
                     content=ui.div(
                         create_form_group(
                             "Grid n_obs",
@@ -51,8 +48,8 @@ def render_benchmark_ui() -> ui.Tag:
             ui.div(
                 {"class": "col-lg-6"},
                 create_card(
-                    title="Datos y n_jobs",
-                    subtitle="CSV y prueba secuencial vs paralelo interno",
+                    title="Datos y rejilla",
+                    subtitle="CSV del sampler y modo de búsqueda (p,q)",
                     content=ui.div(
                         create_form_group(
                             "CSV",
@@ -64,21 +61,7 @@ def render_benchmark_ui() -> ui.Tag:
                             "Archivo en TT/sampler/datasets/.",
                         ),
                         create_form_group(
-                            "Grid n_jobs",
-                            ui.input_text(
-                                "fb_njobs_grid",
-                                "",
-                                value="100, 500, 1000, 2000",
-                            ),
-                            "Tamaños para comparar n_jobs=1 vs -1 en ARIMAModel.",
-                        ),
-                        create_form_group(
-                            "Repeticiones n_jobs",
-                            ui.input_numeric("fb_njobs_repeats", "", value=3, min=1, max=10),
-                            None,
-                        ),
-                        create_form_group(
-                            "Rejilla ParallelARIMAWorkflow",
+                            "Rejilla pipeline paralelo",
                             ui.input_select(
                                 "fb_grid_mode",
                                 "",
@@ -89,7 +72,7 @@ def render_benchmark_ui() -> ui.Tag:
                                 },
                                 selected="auto_n",
                             ),
-                            "Cómo se eligen los techos de p y q antes del grid (documentación en docs/ARIMA_METODOLOGIA_ROADMAP.md).",
+                            "Techos de p y q en el workflow Spark (docs/ARIMA_METODOLOGIA_ROADMAP.md).",
                         ),
                         create_form_group(
                             "max_p y max_q (solo modo manual)",
@@ -98,7 +81,7 @@ def render_benchmark_ui() -> ui.Tag:
                                 ui.input_numeric("fb_manual_max_q", "max_q", value=3, min=0, max=15),
                                 class_="d-flex gap-2 flex-wrap",
                             ),
-                            "Se usan solo si la rejilla está en manual.",
+                            "Solo si la rejilla está en manual.",
                         ),
                     ),
                 ),
@@ -114,5 +97,4 @@ def render_benchmark_ui() -> ui.Tag:
         ),
         ui.output_ui("fb_status_ui"),
         ui.output_ui("fb_results_panel"),
-        ui.output_ui("fb_summary_ui"),
     )

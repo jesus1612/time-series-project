@@ -41,6 +41,11 @@ def render_results_ui() -> ui.Tag:
                     ui.output_ui("forecast_table_ui"),
                     class_="mb-4"
                 ),
+                ui.div(
+                    ui.tags.h5("|Diferencia lineal − paralelo| por horizonte:"),
+                    ui.output_plot("forecast_diff_horizon_plot", height="300px"),
+                    class_="mb-4",
+                ),
                 # Diagnostics
                 ui.div(
                     ui.tags.h5("Diagnósticos del modelo:"),

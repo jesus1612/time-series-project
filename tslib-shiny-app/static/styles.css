@@ -515,6 +515,25 @@ input.shiny-bound-input.form-control:focus {
   color: var(--text-primary) !important;
 }
 
+/* Native <select> (Bootstrap .form-select) — texto legible al abrir y con foco */
+select.form-select,
+select.form-control:not(.shiny-input-text):not(.shiny-input-number) {
+  background-color: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color) !important;
+}
+select.form-select:focus,
+select.form-select:active,
+select.form-select:hover {
+  color: var(--text-primary) !important;
+  background-color: var(--bg-hover) !important;
+}
+select.form-select option,
+select.form-control option {
+  background-color: var(--bg-card-alt);
+  color: var(--text-primary);
+}
+
 /* Additional selectors for number inputs specifically */
 input[type="number"].form-control,
 input[type="number"].shiny-input-number,
@@ -915,6 +934,18 @@ input[type="number"].shiny-bound-input:focus {
 }
 .bench-palette-swatch--5::before {
   background: var(--bench-c5);
+}
+
+.bench-palette-key--two {
+  gap: var(--spacing-md) var(--spacing-xl);
+}
+
+.bench-palette-swatch--par::before {
+  background: #2a9d8f;
+}
+
+.bench-palette-swatch--lin::before {
+  background: #e879a8;
 }
 
 .bench-run-btn {

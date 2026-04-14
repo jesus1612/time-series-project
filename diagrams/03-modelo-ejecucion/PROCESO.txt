@@ -1,5 +1,5 @@
 Documentación: Modelo y ejecución
-Versión 1.4 · Alcance: configuración, ajuste y ejecución comparativa lineal/paralela para AR, MA, ARMA y ARIMA sobre Spark.
+Versión 1.5 · Alcance: configuración, ajuste y ejecución comparativa lineal/paralela para AR, MA, ARMA y ARIMA sobre Spark.
 Diagramas: DOCUMENTACION.md en esta carpeta.
 
 • Objetivo del paso
@@ -14,12 +14,13 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
   – App guarda resultados y metadata de ejecución.
 
 • Benchmark (pestaña aparte)
-  – Tiempos secuencial vs paralelo para varias órdenes ARIMA.
-  – Benchmark triple: lineal TSLib, ParallelARIMAWorkflow, Spark+statsmodels; datasets en TT/sampler/datasets/.
+  – Comparación de **dos rutas ARIMA**: **ARIMA paralelo** (Spark / `ParallelARIMAWorkflow`) vs **ARIMA lineal** (statsmodels en proceso); datasets en `TT/sampler/datasets/`.
+  – Gráficos: tiempos de ajuste (eje Y log), RMSE/MAE/MAPE en holdout, |error| por horizonte. Sin speedup ni bloque n_jobs del `ARIMAModel` en esa pestaña.
 
 • Trazabilidad mínima implementada
   – Orden efectivo ajustado en el modelo lineal.
   – Backend paralelo (`spark`) para todos los modelos en esta vista.
+  – Tiempos de ajuste aproximados: `execution_metadata.time_linear_fit_s` y `time_parallel_fit_s` (wall-clock del paso 3).
   – Registro en `execution_log` (incluye avisos del motor como líneas ⚠ Aviso) y `runtime_warnings` en estado.
   – Resumen en UI: panel "Registro de la corrida" en esta pantalla; detalle ampliado en Paso 4 (Resultados).
 
@@ -33,13 +34,14 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
   – Si Spark no está disponible, la ruta paralela falla con mensaje explícito y no usa fallback CPU.
 
 • Métrica de precisión comparativa en UI
-  – Se muestra diferencia entre pronóstico lineal y paralelo: MAE Dif. L/P y RMSE Dif. L/P.
-  – Estas métricas comparan consistencia entre rutas; no sustituyen evaluación contra datos futuros reales.
+  – Diferencia entre vectores de pronóstico lineal vs paralelo: MAE |L−P|, RMSE entre rutas, y escalar tipo MAPE* (`compare_forecasts`).
+  – Con ARIMA: además AIC/BIC del modelo paralelo cuando vienen en `parameters_`.
+  – No sustituyen evaluación frente a un hold-out real salvo que se añada ese diseño al asistente.
 
 • Avisos del motor (Spark / TSLib)
   – Captura en driver durante fit lineal y pronóstico; en paralelo genérico, avisos del ajuste por grupo se serializan en columna `engine_warnings` y se fusionan en `parallel_runtime_warnings`.
   – UI: validación (paso 1) muestra `runtime_warnings` de validación+exploración; ejecución muestra log y paso 4 lista consolidada.
 
 • Mejoras propuestas
-  – Incluir tiempos por fase y tabla consolidada de comparación.
-  – Añadir backtesting holdout para precisión absoluta por ruta (lineal vs paralela).
+  – Backtesting holdout en el asistente para RMSE/MAE/MAPE **frente a valores reales** por ruta.
+  – Export CSV de pronósticos comparativos desde Resultados.
