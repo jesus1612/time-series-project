@@ -14,6 +14,7 @@ from .transformations import (
 from .validation import DataValidator
 from .constants import DEFAULT_MAX_MISSING_RATIO, DEFAULT_MIN_SERIES_LENGTH
 from .column_suggestions import suggest_datetime_column, suggest_numeric_columns
+from .resampling import resample_series, resample_numpy_with_index
 
 __all__ = [
     "DifferencingTransformer",
@@ -24,6 +25,8 @@ __all__ = [
     "DEFAULT_MIN_SERIES_LENGTH",
     "suggest_datetime_column",
     "suggest_numeric_columns",
+    "resample_series",
+    "resample_numpy_with_index",
 ]
 
 

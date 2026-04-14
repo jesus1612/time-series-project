@@ -20,6 +20,11 @@ from .arima import ARProcess, MAProcess, ARMAProcess, ARIMAProcess
 from .acf_pacf import ACFCalculator, PACFCalculator, ACFPACFAnalyzer
 from .stationarity import ADFTest, KPSSTest
 from .optimization import MLEOptimizer
+from .arima_order_suggestion import (
+    suggest_p_q_orders,
+    suggest_arima_orders_from_acf_pacf,
+    apply_differencing,
+)
 
 __all__ = [
     # ARIMA processes
@@ -36,4 +41,8 @@ __all__ = [
     "KPSSTest",
     # Optimisation
     "MLEOptimizer",
+    # ARIMA order suggestion (ACF/PACF)
+    "suggest_p_q_orders",
+    "suggest_arima_orders_from_acf_pacf",
+    "apply_differencing",
 ]

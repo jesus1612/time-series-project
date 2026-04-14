@@ -153,6 +153,9 @@ def register_benchmark_server(input, output, session, app_state):
             nj_raw = input.fb_njobs_grid()
             nj_grid = [int(x.strip()) for x in nj_raw.split(",") if x.strip()]
             nj_repeats = int(input.fb_njobs_repeats())
+            grid_mode = str(input.fb_grid_mode())
+            manual_max_p = int(input.fb_manual_max_p()) if grid_mode == "manual" else None
+            manual_max_q = int(input.fb_manual_max_q()) if grid_mode == "manual" else None
         except Exception as e:
             st = app_state.get().copy()
             st["fb_status"] = "error"
@@ -172,12 +175,18 @@ def register_benchmark_server(input, output, session, app_state):
                     n_obs_grid=n_grid or None,
                     repeats=max(1, repeats),
                     order=(1, 1, 1),
+                    grid_mode=grid_mode,
+                    manual_max_p=manual_max_p,
+                    manual_max_q=manual_max_q,
                 )
                 acc = suite.run_accuracy_benchmark(
                     csv_name=csv_name,
                     value_column=None,
                     order=(1, 1, 1),
                     test_ratio=0.2,
+                    grid_mode=grid_mode,
+                    manual_max_p=manual_max_p,
+                    manual_max_q=manual_max_q,
                 )
 
             fig_t = suite.build_performance_time_figure(perf)
@@ -217,7 +226,14 @@ def register_benchmark_server(input, output, session, app_state):
                 ax.text(0.5, 0.5, "No se pudo cargar la serie de entrenamiento", ha="center")
                 ax.axis("off")
 
-            fig_h = suite.build_error_by_horizon_figure(csv_name, (1, 1, 1), 0.2)
+            fig_h = suite.build_error_by_horizon_figure(
+                csv_name,
+                (1, 1, 1),
+                0.2,
+                grid_mode=grid_mode,
+                manual_max_p=manual_max_p,
+                manual_max_q=manual_max_q,
+            )
             if fig_h is None:
                 fig_h, ax = plt.subplots(figsize=(5, 2))
                 ax.text(0.5, 0.5, "Error por horizonte no disponible", ha="center")

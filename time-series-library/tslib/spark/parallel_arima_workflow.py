@@ -17,7 +17,7 @@ Process Overview:
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Dict, Any, Optional, Tuple, List, Union, Literal
 from scipy import stats
 import warnings
 
@@ -103,7 +103,13 @@ class ParallelARIMAWorkflow:
                  spark_config: Optional[Dict[str, str]] = None,
                  master: Optional[str] = None,
                  app_name: Optional[str] = None,
-                 verbose: bool = True):
+                 verbose: bool = True,
+                 grid_mode: Literal["auto_n", "acf_pacf", "manual"] = "auto_n",
+                 manual_max_p: Optional[int] = None,
+                 manual_max_q: Optional[int] = None,
+                 d_max: int = 2,
+                 acf_pacf_alpha: float = 0.05,
+                 acf_pacf_max_lag: Optional[int] = None):
         """Initialize parallel ARIMA workflow"""
         
         if not check_spark_availability():
@@ -170,9 +176,19 @@ class ParallelARIMAWorkflow:
             'significance_level': 0.05
         }
         
+        if grid_mode not in ("auto_n", "acf_pacf", "manual"):
+            raise ValueError("grid_mode must be 'auto_n', 'acf_pacf', or 'manual'")
+        self._grid_mode = grid_mode
+        self._manual_max_p = manual_max_p
+        self._manual_max_q = manual_max_q
+        self._d_max = int(max(0, d_max))
+        self._acf_pacf_alpha = float(acf_pacf_alpha)
+        self._acf_pacf_max_lag = acf_pacf_max_lag
+
         if self.verbose:
             print("✓ ParallelARIMAWorkflow initialized")
             print(f"  Spark session: {'Created' if self._owns_spark else 'Provided'}")
+            print(f"  grid_mode: {self._grid_mode}, d_max: {self._d_max}")
     
     def __del__(self):
         """Cleanup Spark resources if we own the session"""
@@ -229,26 +245,85 @@ class ParallelARIMAWorkflow:
             transformer = None
             transformed_data = data.copy()
         
-        # Perform stationarity analysis
+        # Explicit stationarity loop (diagram "¿estacionaria?") up to d_max
+        if len(transformed_data) < 4:
+            if self.verbose:
+                print("  Short series: single-pass stationarity analyze()")
+            stationarity_results = self._stationarity_analyzer.analyze(transformed_data)
+            d = int(stationarity_results["suggested_differencing_order"])
+            self.results_["step1_differencing"] = {
+                "d": d,
+                "log_transform_needed": log_needed,
+                "variance_growth": variance_growth,
+                "stationarity_results": {**stationarity_results, "iterations": []},
+            }
+            return d, log_needed, transformer
+
         if self.verbose:
-            print("  Running stationarity tests (ADF/KPSS)...")
-        
-        stationarity_results = self._stationarity_analyzer.analyze(transformed_data)
-        d = stationarity_results['suggested_differencing_order']
-        
-        if self.verbose:
-            print(f"  ADF test stationary: {stationarity_results['adf_test']['is_stationary']}")
-            print(f"  KPSS test stationary: {stationarity_results['kpss_test']['is_stationary']}")
-            print(f"  ✓ Suggested differencing order: d = {d}")
-        
-        # Store results
-        self.results_['step1_differencing'] = {
-            'd': d,
-            'log_transform_needed': log_needed,
-            'variance_growth': variance_growth,
-            'stationarity_results': stationarity_results
+            print("  Running stationarity loop (ADF/KPSS) up to d_max=%d..." % self._d_max)
+
+        y = transformed_data.astype(float)
+        iterations: List[Dict[str, Any]] = []
+        current_d = 0
+        last_adf: Optional[Dict[str, Any]] = None
+        last_kpss: Optional[Dict[str, Any]] = None
+        stationary_reached = False
+        insufficient_after_diff = False
+
+        while True:
+            last_adf = self._stationarity_analyzer.adf_test.test(y)
+            last_kpss = self._stationarity_analyzer.kpss_test.test(y)
+            is_stat = self._stationarity_analyzer._determine_stationarity(
+                last_adf, last_kpss
+            )
+            iterations.append({
+                "d": current_d,
+                "n_obs": int(len(y)),
+                "adf_stationary": bool(last_adf["is_stationary"]),
+                "kpss_stationary": bool(last_kpss["is_stationary"]),
+                "adf_statistic": float(last_adf["test_statistic"]),
+                "kpss_statistic": float(last_kpss["test_statistic"]),
+            })
+            if is_stat:
+                stationary_reached = True
+                break
+            if current_d >= self._d_max:
+                break
+            y_new = np.diff(y)
+            if len(y_new) < 4:
+                insufficient_after_diff = True
+                break
+            y = y_new
+            current_d += 1
+
+        if stationary_reached:
+            d = current_d
+        elif insufficient_after_diff:
+            d = min(current_d + 1, self._d_max)
+        else:
+            d = self._d_max
+
+        stationarity_results = {
+            "adf_test": last_adf,
+            "kpss_test": last_kpss,
+            "is_stationary": stationary_reached,
+            "suggested_differencing_order": d,
+            "iterations": iterations,
         }
-        
+
+        if self.verbose:
+            print(f"  ADF test stationary: {last_adf['is_stationary']}")
+            print(f"  KPSS test stationary: {last_kpss['is_stationary']}")
+            print(f"  ✓ Differencing iterations: {len(iterations)}")
+            print(f"  ✓ Suggested differencing order: d = {d}")
+
+        self.results_["step1_differencing"] = {
+            "d": d,
+            "log_transform_needed": log_needed,
+            "variance_growth": variance_growth,
+            "stationarity_results": stationarity_results,
+        }
+
         return d, log_needed, transformer
     
     def _calculate_variance_growth(self, data: np.ndarray) -> float:
@@ -349,6 +424,54 @@ class ParallelARIMAWorkflow:
         self._config.update(config)
         self.results_['config'] = config
         
+        return config
+    
+    def _apply_grid_mode_to_config(
+        self,
+        config: Dict[str, Any],
+        working_data: np.ndarray,
+        d: int,
+        n_obs: int,
+    ) -> Dict[str, Any]:
+        """
+        Adjust max_p / max_q from grid_mode: auto_n (unchanged), acf_pacf, or manual.
+        """
+        from ..core.arima_order_suggestion import suggest_p_q_orders
+
+        if self._grid_mode == "manual":
+            if self._manual_max_p is None or self._manual_max_q is None:
+                raise ValueError(
+                    "grid_mode='manual' requires manual_max_p and manual_max_q."
+                )
+            out = {
+                **config,
+                "max_p": int(self._manual_max_p),
+                "max_q": int(self._manual_max_q),
+            }
+            if self.verbose:
+                print(f"  Grid mode manual: max_p={out['max_p']}, max_q={out['max_q']}")
+            return out
+
+        if self._grid_mode == "acf_pacf":
+            cap_p = int(config["max_p"])
+            cap_q = int(config["max_q"])
+            mp, mq, meta = suggest_p_q_orders(
+                working_data,
+                d,
+                max_lag=self._acf_pacf_max_lag,
+                alpha=self._acf_pacf_alpha,
+                max_p_bound=cap_p,
+                max_q_bound=cap_q,
+            )
+            self.results_["acf_pacf_identification"] = meta
+            out = {**config, "max_p": mp, "max_q": mq}
+            if self.verbose:
+                print(
+                    f"  Grid mode acf_pacf: max_p={mp}, max_q={mq} "
+                    f"(auto_n caps {cap_p}, {cap_q})"
+                )
+            return out
+
         return config
     
     def _generate_parameter_combinations(self, d: int, max_p: int, max_q: int) -> List[Tuple[int, int, int]]:
@@ -1525,9 +1648,9 @@ class ParallelARIMAWorkflow:
                              data: np.ndarray, 
                              current_order: Tuple[int, int, int]) -> Tuple[int, int, int]:
         """
-        Try local adjustment by testing (p+1,q) and (p,q+1)
+        Try local adjustment: (p+1,q), (p,q+1), then (p-1,q) and (p,q-1) when valid.
         
-        Only adjusts if AICc improves by >10%.
+        Only adjusts if AICc improves by >10% vs the baseline model.
         
         Parameters:
         -----------
@@ -1573,16 +1696,22 @@ class ParallelARIMAWorkflow:
         if self.verbose:
             print(f"  Current AICc: {base_aicc:.2f}")
         
-        # Try adjustments
+        # Try adjustments: +1 in each dimension, then -1 (narrative-aligned mini-grid)
         candidates = [
-            (p+1, d, q),  # Increase AR order
-            (p, d, q+1)   # Increase MA order
+            (p + 1, d, q),
+            (p, d, q + 1),
         ]
-        
+        if p > 0:
+            candidates.append((p - 1, d, q))
+        if q > 0:
+            candidates.append((p, d, q - 1))
+
         best_order = current_order
         best_aicc = base_aicc
         
         for test_p, test_d, test_q in candidates:
+            if test_p == 0 and test_q == 0:
+                continue
             try:
                 test_model = ARIMAProcess(test_p, test_d, test_q, trend='c', n_jobs=1)
                 with warnings.catch_warnings():
@@ -1629,7 +1758,8 @@ class ParallelARIMAWorkflow:
             'adjusted': best_order != current_order,
             'base_aicc': float(base_aicc),
             'final_aicc': float(best_aicc),
-            'improvement_pct': float((base_aicc - best_aicc) / base_aicc * 100) if best_aicc < base_aicc else 0.0
+            'improvement_pct': float((base_aicc - best_aicc) / base_aicc * 100) if best_aicc < base_aicc else 0.0,
+            'candidates_tried': [tuple(c) for c in candidates],
         }
         
         return best_order
@@ -1692,8 +1822,15 @@ class ParallelARIMAWorkflow:
         
         # STEPS 2-3: Determine parameter ranges and generate combinations
         config = self._determine_parameter_ranges(n)
+        config = self._apply_grid_mode_to_config(config, working_data, d, n)
+        self._config.update(config)
+        self._config["grid_mode"] = self._grid_mode
+        self._config["d_max"] = self._d_max
+        self.results_["config"] = {
+            **self._config,
+        }
         combinations = self._generate_parameter_combinations(
-            d, config['max_p'], config['max_q']
+            d, config["max_p"], config["max_q"]
         )
         
         # STEP 4: Create sliding windows
@@ -1911,6 +2048,7 @@ class ParallelARIMAWorkflow:
         # Configuration
         summary.append("Configuration:")
         summary.append(f"  Dataset size: {len(self.data_)} observations")
+        summary.append(f"  grid_mode: {self._grid_mode}")
         summary.append(f"  Max p: {self._config['max_p']}")
         summary.append(f"  Max q: {self._config['max_q']}")
         summary.append(f"  Sliding windows: {self._config['num_sliding_windows']}")

@@ -80,10 +80,22 @@ def _linear_fit_predict(train: np.ndarray, order: Tuple[int, int, int], horizon:
     return np.asarray(out, dtype=float).ravel()
 
 
-def _workflow_fit_predict(train: np.ndarray, horizon: int, verbose: bool = False) -> np.ndarray:
+def _workflow_fit_predict(
+    train: np.ndarray,
+    horizon: int,
+    verbose: bool = False,
+    *,
+    grid_mode: str = "auto_n",
+    manual_max_p: Optional[int] = None,
+    manual_max_q: Optional[int] = None,
+) -> np.ndarray:
     from tslib.spark import ParallelARIMAWorkflow
 
-    w = ParallelARIMAWorkflow(verbose=verbose)
+    kw: Dict[str, Any] = {"verbose": verbose, "grid_mode": grid_mode}
+    if grid_mode == "manual":
+        kw["manual_max_p"] = manual_max_p
+        kw["manual_max_q"] = manual_max_q
+    w = ParallelARIMAWorkflow(**kw)
     w.fit(train)
     pred = w.predict(steps=horizon, return_conf_int=False)
     return np.asarray(pred, dtype=float).ravel()
@@ -142,6 +154,9 @@ class ARIMABenchmarkSuite:
         n_obs_grid: Optional[List[int]] = None,
         repeats: int = 2,
         order: Tuple[int, int, int] = (1, 1, 1),
+        grid_mode: str = "auto_n",
+        manual_max_p: Optional[int] = None,
+        manual_max_q: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Wall-clock fit time only (forecast optional small). Returns times per method and N.
@@ -200,7 +215,11 @@ class ARIMABenchmarkSuite:
                     from tslib.spark import ParallelARIMAWorkflow
 
                     def _wf():
-                        w = ParallelARIMAWorkflow(verbose=False)
+                        kw: Dict[str, Any] = {"verbose": False, "grid_mode": grid_mode}
+                        if grid_mode == "manual":
+                            kw["manual_max_p"] = manual_max_p
+                            kw["manual_max_q"] = manual_max_q
+                        w = ParallelARIMAWorkflow(**kw)
                         w.fit(data)
 
                     workflow_times[n] = _time_call(_wf, repeats=max(1, repeats - 1))
@@ -282,6 +301,9 @@ class ARIMABenchmarkSuite:
         value_column: Optional[str] = None,
         order: Tuple[int, int, int] = (1, 1, 1),
         test_ratio: float = 0.2,
+        grid_mode: str = "auto_n",
+        manual_max_p: Optional[int] = None,
+        manual_max_q: Optional[int] = None,
     ) -> Dict[str, Any]:
         path = self.sampler_dir / csv_name
         if not path.exists():
@@ -336,7 +358,14 @@ class ARIMABenchmarkSuite:
 
         if spark is not None:
             try:
-                pred_w = _workflow_fit_predict(train, horizon, verbose=False)
+                pred_w = _workflow_fit_predict(
+                    train,
+                    horizon,
+                    verbose=False,
+                    grid_mode=grid_mode,
+                    manual_max_p=manual_max_p,
+                    manual_max_q=manual_max_q,
+                )
                 metrics["parallel_workflow"] = self._error_block(actual, pred_w)
             except Exception as e:
                 metrics["parallel_workflow"] = {"error": str(e)}
@@ -575,6 +604,9 @@ class ARIMABenchmarkSuite:
         csv_name: str,
         order: Tuple[int, int, int] = (1, 1, 1),
         test_ratio: float = 0.2,
+        grid_mode: str = "auto_n",
+        manual_max_p: Optional[int] = None,
+        manual_max_q: Optional[int] = None,
     ) -> Optional[plt.Figure]:
         """
         |error| per out-of-sample step: ParallelARIMAWorkflow (when Spark is available) vs
@@ -635,7 +667,14 @@ class ARIMABenchmarkSuite:
 
         if spark is not None:
             try:
-                pred_w = _workflow_fit_predict(train, horizon, verbose=False)
+                pred_w = _workflow_fit_predict(
+                    train,
+                    horizon,
+                    verbose=False,
+                    grid_mode=grid_mode,
+                    manual_max_p=manual_max_p,
+                    manual_max_q=manual_max_q,
+                )
                 series.append(
                     (
                         LABEL_PARALLEL_WORKFLOW,

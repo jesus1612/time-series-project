@@ -638,6 +638,9 @@ class TSLibService:
         data: np.ndarray,
         verbose: bool = True,
         validation_report: Optional[Dict[str, Any]] = None,
+        grid_mode: str = "auto_n",
+        manual_max_p: Optional[int] = None,
+        manual_max_q: Optional[int] = None,
     ) -> Any:
         """
         Fit parallel ARIMA using Spark workflow only. Series must be complete (no NaN).
@@ -649,7 +652,11 @@ class TSLibService:
 
         data_clean = _require_complete_numeric_series(data)
 
-        workflow = ParallelARIMAWorkflow(verbose=verbose)
+        wf_kw: Dict[str, Any] = {"verbose": verbose, "grid_mode": grid_mode}
+        if grid_mode == "manual":
+            wf_kw["manual_max_p"] = manual_max_p
+            wf_kw["manual_max_q"] = manual_max_q
+        workflow = ParallelARIMAWorkflow(**wf_kw)
         workflow.fit(data_clean)
         setattr(workflow, "backend_", "spark")
         return workflow
@@ -803,6 +810,13 @@ class TSLibService:
                     metrics['order'] = f"ARIMA({order})"
             else:
                 metrics["order"] = "ARIMA(1,1,1)"
+
+            if hasattr(workflow, "results_") and isinstance(workflow.results_, dict):
+                cfg = workflow.results_.get("config")
+                if isinstance(cfg, dict):
+                    metrics["grid_mode"] = cfg.get("grid_mode", "")
+                    if "max_p" in cfg and "max_q" in cfg:
+                        metrics["max_p_q"] = f"max_p={cfg['max_p']}, max_q={cfg['max_q']}"
 
             if hasattr(workflow, "parameters_"):
                 metrics["parameters"] = workflow.parameters_

@@ -77,6 +77,29 @@ def render_benchmark_ui() -> ui.Tag:
                             ui.input_numeric("fb_njobs_repeats", "", value=3, min=1, max=10),
                             None,
                         ),
+                        create_form_group(
+                            "Rejilla ParallelARIMAWorkflow",
+                            ui.input_select(
+                                "fb_grid_mode",
+                                "",
+                                {
+                                    "auto_n": "Automático (n)",
+                                    "acf_pacf": "ACF / PACF",
+                                    "manual": "Manual (max p, q)",
+                                },
+                                selected="auto_n",
+                            ),
+                            "Cómo se eligen los techos de p y q antes del grid (documentación en docs/ARIMA_METODOLOGIA_ROADMAP.md).",
+                        ),
+                        create_form_group(
+                            "max_p y max_q (solo modo manual)",
+                            ui.div(
+                                ui.input_numeric("fb_manual_max_p", "max_p", value=3, min=0, max=15),
+                                ui.input_numeric("fb_manual_max_q", "max_q", value=3, min=0, max=15),
+                                class_="d-flex gap-2 flex-wrap",
+                            ),
+                            "Se usan solo si la rejilla está en manual.",
+                        ),
                     ),
                 ),
             ),

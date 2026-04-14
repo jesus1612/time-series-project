@@ -41,7 +41,7 @@ Inspección de tendencia, estacionalidad explícita, cambios de varianza y valor
 - **ACF**: autocorrelación de \(y_t\) con retardos; sugiere componentes MA o necesidad de diferenciación.
 - **PACF**: correlación parcial; suele indicar orden AR.
 
-En el enfoque **Box–Jenkins** clásico, ACF/PACF guían la elección inicial de \(p\) y \(q\). En `ParallelARIMAWorkflow`, la búsqueda de \((p,q)\) se hace principalmente por **rejilla** y criterios de información sobre ventanas; un paso explícito de identificación ACF/PACF previa al grid **no** es obligatorio en el código (ver tabla diagrama vs código más abajo).
+En el enfoque **Box–Jenkins** clásico, ACF/PACF guían la elección inicial de \(p\) y \(q\). En `ParallelARIMAWorkflow`, la búsqueda de \((p,q)\) sigue siendo por **rejilla** e información sobre ventanas; con `grid_mode="acf_pacf"` los techos de \(p\) y \(q\) se acotan a partir de ACF/PACF (ver roadmap). El modo por defecto sigue siendo automático según \(n\) (`auto_n`).
 
 ### Residuos frente al tiempo
 
@@ -116,7 +116,7 @@ Spark añade **overhead** (serialización, JVM, coordinación). Para series **co
 |----------------------|-----------------------------|
 | Granularidad / agrupación por ventanas (naranja) | La **lista de ventanas** se construye en el **driver** (no es en sí un job Spark). |
 | ADF / KPSS | **Local** (`StationarityAnalyzer`). |
-| ACF/PACF de identificación antes del grid | **No** hay paso explícito tipo Box–Jenkins previo; \((p,q)\) vienen de la **rejilla** y \(d\) de los tests. La **ACF de residuos** entra en el **diagnóstico** posterior. |
+| ACF/PACF de identificación antes del grid | Opcional: `grid_mode="acf_pacf"` ajusta `max_p`/`max_q` vía `suggest_p_q_orders`. Por defecto (`auto_n`) la rejilla usa solo el tamaño muestral. La **ACF de residuos** sigue en el **diagnóstico** posterior. |
 | Ventanas deslizantes según cómputo (naranja) | **Generación** de ventanas: local; **ajuste MLE + AICc** por tarea: **Spark** (`mapInPandas`). |
 | Grid \((p,q)\) | **Local** (lista de combinaciones). |
 | MLE por ventana + AICc (naranja) | **Spark** (tareas fila a fila). |
@@ -127,6 +127,29 @@ Spark añade **overhead** (serialización, JVM, coordinación). Para series **co
 ### Conclusión
 
 El diagrama describe bien el **reparto de trabajo pesado** (muchas estimaciones y validaciones por ventana). Algunas cajas “naranjas” del diagrama son **conceptualmente** paralelas (pueden ejecutarse en distintos ejecutores); otras etapas son **baratas** y siguen siendo razonables en el driver.
+
+**Plan de issues y ejecución** para acercar la implementación al diagrama al 100%: [`ARIMA_METODOLOGIA_ROADMAP.md`](ARIMA_METODOLOGIA_ROADMAP.md).
+
+### Tabla de trazabilidad (pasos del diagrama ↔ `ParallelARIMAWorkflow`)
+
+**Nota:** En el diagrama, el “paso 1” suele ser **granularidad / frecuencia**; en el código, **STEP 1** del workflow es **orden \(d\)** (y transformación log si aplica). El remuestreo explícito está en `tslib.preprocessing.resample_series`, no dentro de STEP 1.
+
+| Paso diagrama | Descripción | Dónde en el código | Estado |
+|---------------|-------------|-------------------|--------|
+| 1 | Frecuencia / agregación | `preprocessing.resampling.resample_series` (previo al workflow) | Implementado (preprocesado) |
+| 2 | Carga / inspección | Fuera de TSLib (Shiny, pandas) | Externo |
+| 3 | Varianza / log | `ParallelARIMAWorkflow._determine_differencing_order` (umbral varianza) | Implementado |
+| 4 | ¿Estacionaria? (bucle ADF/KPSS) | Mismo STEP 1: bucle explícito hasta `d_max` con `iterations` en `results_` | Implementado |
+| 5 | Elegir \(d\) | Resultado del bucle anterior | Implementado |
+| 6 | ACF/PACF → \(p,q\) | `grid_mode="acf_pacf"` + `core.arima_order_suggestion.suggest_p_q_orders` | Implementado (opcional) |
+| 7 | Rejilla \((p,d,q)\) | `_determine_parameter_ranges`, `_generate_parameter_combinations` | Implementado |
+| 8 | Ventanas deslizantes + MLE | `_create_sliding_windows`, `_fit_models_parallel_sliding` | Implementado |
+| 9 | Selección global (AICc, etc.) | `_select_global_model` | Implementado |
+| 10 | Validación / backtesting | `_backtest_fixed_windows` | Implementado |
+| 11 | Diagnóstico residuos | `_diagnose_residuals` | Implementado |
+| 12 | Ajuste local ± orden | `_try_local_adjustment` (+1 y −1 en \(p\) o \(q\)) | Implementado |
+| 13 | Modelo final | `fit` → `ARIMAProcess` sobre serie completa | Implementado |
+| 14 | Pronóstico | `predict` | Implementado |
 
 ---
 
@@ -159,6 +182,7 @@ Tras pulsar **Generar benchmark**, aparecen en orden:
 | Benchmark UI (tiempos / métricas) | `tslib-shiny-app/features/benchmark/arima_benchmark.py` |
 | statsmodels helpers | `time-series-library/tslib/benchmarks/arima_evaluation.py` |
 | Matemática y pasos del workflow (docs internos) | `time-series-library/docs/MATHEMATICS_BY_MODEL.md` |
+| Roadmap metodología ARIMA (issues ARIMA-1…8) | `docs/ARIMA_METODOLOGIA_ROADMAP.md` |
 
 ---
 
