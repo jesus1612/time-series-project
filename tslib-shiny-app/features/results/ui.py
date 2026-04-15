@@ -1,5 +1,6 @@
 # Results feature UI components
 from shiny import ui
+from shinywidgets import output_widget
 from components.layout import create_card, create_metric_card
 
 def render_results_ui() -> ui.Tag:
@@ -32,7 +33,11 @@ def render_results_ui() -> ui.Tag:
                 # Forecast plot
                 ui.div(
                     ui.tags.h5("Pronóstico:"),
-                    ui.output_plot("forecast_plot", height="400px"),
+                    ui.tags.p(
+                        "Gráfico interactivo: zoom y desplazamiento con la barra de herramientas o gestos.",
+                        class_="text-muted small mb-1",
+                    ),
+                    output_widget("forecast_plot", height="420px"),
                     class_="mb-4"
                 ),
                 # Forecast table
@@ -43,7 +48,7 @@ def render_results_ui() -> ui.Tag:
                 ),
                 ui.div(
                     ui.tags.h5("|Diferencia lineal − paralelo| por horizonte:"),
-                    ui.output_plot("forecast_diff_horizon_plot", height="300px"),
+                    output_widget("forecast_diff_horizon_plot", height="320px"),
                     class_="mb-4",
                 ),
                 # Diagnostics
