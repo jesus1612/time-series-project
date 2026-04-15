@@ -2206,9 +2206,19 @@ def server(input, output, session):
                 app_state.set(new_state)
 
                 t_lin0 = time.perf_counter()
-                fitted_model, w_fit = run_with_recorded_warnings(
-                    lambda: tslib_service.fit_statsmodels_arima(np.asarray(data, dtype=float), sm_order)
-                )
+
+                def _fit_linear_statsmodels():
+                    if parallel_workflow is not None and getattr(
+                        parallel_workflow, "working_data_", None
+                    ) is not None:
+                        return tslib_service.fit_statsmodels_arima_aligned_to_workflow(
+                            parallel_workflow
+                        )
+                    return tslib_service.fit_statsmodels_arima(
+                        np.asarray(data, dtype=float), sm_order
+                    )
+
+                fitted_model, w_fit = run_with_recorded_warnings(_fit_linear_statsmodels)
                 time_linear_fit_s = float(time.perf_counter() - t_lin0)
                 time_statsmodels_fit_s = time_linear_fit_s
                 runtime_msgs.extend(w_fit)

@@ -2,7 +2,7 @@
 import warnings
 import pandas as pd
 import numpy as np
-from typing import Callable, Dict, List, Optional, Tuple, Any, TypeVar
+from typing import Callable, Dict, List, Optional, Tuple, Any, TypeVar, Union
 import matplotlib.pyplot as plt
 import io
 import base64
@@ -66,12 +66,21 @@ class StatsmodelsFittedARIMA:
     Thin wrapper around statsmodels ARIMA fit result for the Shiny app (linear route).
 
     Paralelo ARIMA uses ParallelARIMAWorkflow (11-step Spark); lineal ARIMA uses this.
+    When the workflow fits on log-transformed data, pass inverse_forecast_fn so forecasts
+    are returned in the original scale (same as workflow.predict).
     """
 
-    def __init__(self, order: Tuple[int, int, int], data: np.ndarray, result: Any):
+    def __init__(
+        self,
+        order: Tuple[int, int, int],
+        data: np.ndarray,
+        result: Any,
+        inverse_forecast_fn: Optional[Callable[[Union[np.ndarray, List[float]]], np.ndarray]] = None,
+    ):
         self.order = (int(order[0]), int(order[1]), int(order[2]))
         self._data = np.asarray(data, dtype=float).ravel()
         self._result = result
+        self._inverse_forecast_fn = inverse_forecast_fn
         self.backend_ = "statsmodels"
         aic = getattr(result, "aic", None)
         bic = getattr(result, "bic", None)
@@ -89,6 +98,8 @@ class StatsmodelsFittedARIMA:
         fc = self._result.get_forecast(steps=steps)
         mean = np.asarray(fc.predicted_mean, dtype=float).ravel()
         if not return_conf_int:
+            if self._inverse_forecast_fn is not None:
+                mean = np.asarray(self._inverse_forecast_fn(mean), dtype=float).ravel()
             return mean
         conf = fc.conf_int()
         # statsmodels may return a DataFrame (iloc) or ndarray depending on version
@@ -104,6 +115,10 @@ class StatsmodelsFittedARIMA:
                 raise RuntimeError(
                     f"Unexpected conf_int shape: {getattr(arr, 'shape', None)}"
                 )
+        if self._inverse_forecast_fn is not None:
+            mean = np.asarray(self._inverse_forecast_fn(mean), dtype=float).ravel()
+            lower = np.asarray(self._inverse_forecast_fn(lower), dtype=float).ravel()
+            upper = np.asarray(self._inverse_forecast_fn(upper), dtype=float).ravel()
         return mean, (lower, upper)
 
     def get_residuals(self) -> np.ndarray:
@@ -164,12 +179,16 @@ class TSLibService:
         self,
         data: np.ndarray,
         order: Tuple[int, int, int],
+        inverse_forecast_fn: Optional[
+            Callable[[Union[np.ndarray, List[float]]], np.ndarray]
+        ] = None,
     ) -> StatsmodelsFittedARIMA:
         """
         Fit ARIMA via statsmodels (linear baseline). Series must be finite with no NaN.
 
-        Use together with Spark ``ParallelARIMAWorkflow``: prefer the workflow's ``order_``
-        so both routes share the same (p,d,q) for comparison.
+        When comparing to ``ParallelARIMAWorkflow``, fit on the same ``working_data_`` and
+        ``order_``; if the workflow used a log transform, pass its ``inverse_transform``
+        as inverse_forecast_fn so predicted levels match ``workflow.predict`` (original scale).
         """
         from statsmodels.tsa.arima.model import ARIMA
 
@@ -178,7 +197,32 @@ class TSLibService:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             res = ARIMA(data_clean, order=(p, d, q)).fit()
-        return StatsmodelsFittedARIMA((p, d, q), data_clean, res)
+        return StatsmodelsFittedARIMA(
+            (p, d, q), data_clean, res, inverse_forecast_fn=inverse_forecast_fn
+        )
+
+    def fit_statsmodels_arima_aligned_to_workflow(self, workflow: Any) -> StatsmodelsFittedARIMA:
+        """
+        Fit statsmodels on the same series and order as a fitted ``ParallelARIMAWorkflow``.
+
+        Reduces train/distribution mismatch vs fitting statsmodels on raw levels when the
+        workflow used log or other preprocessing for ``working_data_``.
+        """
+        wd = getattr(workflow, "working_data_", None)
+        order = getattr(workflow, "order_", None)
+        if wd is None or order is None or len(order) != 3:
+            raise ValueError(
+                "Workflow must be fitted with working_data_ and order_ (run Spark ARIMA first)."
+            )
+        inv: Optional[Callable[[Union[np.ndarray, List[float]]], np.ndarray]] = None
+        lt = getattr(workflow, "_log_transformer", None)
+        if lt is not None and hasattr(lt, "inverse_transform"):
+            inv = lt.inverse_transform
+        return self.fit_statsmodels_arima(
+            np.asarray(wd, dtype=float),
+            (int(order[0]), int(order[1]), int(order[2])),
+            inverse_forecast_fn=inv,
+        )
 
     def get_spark_parallel_status(self, model_type: Optional[str] = None) -> Dict[str, Any]:
         """Return Spark availability status for parallel execution in UI."""

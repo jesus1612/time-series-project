@@ -8,7 +8,8 @@ Process Overview:
 1. Determine differencing order 'd' (non-parallel)
 2-3. Define parameter ranges and generate combinations
 4-5. Parallel fitting with sliding windows
-6. Global model selection
+6. Global model selection (sliding-window ranks + AICc)
+6b. Optional: re-rank top candidates by AIC on full series (closer to standard ARIMA)
 7-8. Validation with fixed windows
 9. Residual diagnostics
 10. Local adjustment if needed
@@ -50,10 +51,10 @@ class ParallelARIMAWorkflow:
     """
     Complete parallel ARIMA workflow using Spark
     
-    This class implements a comprehensive 11-step process for fitting ARIMA models
-    using distributed computing with Spark. It automatically determines optimal
-    parameters through parallel grid search with sliding windows, validates
-    results, and performs diagnostic checks.
+    This class implements a comprehensive parallel ARIMA process (experimental)
+    using Spark: sliding-window grid search, optional **full-sample AIC**
+    reconciliation of the order (to align with standard one-sample ARIMA selection),
+    validation, diagnostics, and a final MLE fit on the full series.
     
     The class is completely independent from ARIMAModel and can be used
     as an alternative parallel approach.
@@ -109,7 +110,9 @@ class ParallelARIMAWorkflow:
                  manual_max_q: Optional[int] = None,
                  d_max: int = 2,
                  acf_pacf_alpha: float = 0.05,
-                 acf_pacf_max_lag: Optional[int] = None):
+                 acf_pacf_max_lag: Optional[int] = None,
+                 full_sample_reconcile: bool = True,
+                 full_sample_reconcile_top_k: int = 15):
         """Initialize parallel ARIMA workflow"""
         
         if not check_spark_availability():
@@ -153,6 +156,7 @@ class ParallelARIMAWorkflow:
         
         # Results storage
         self.data_ = None
+        self.working_data_ = None  # Same scale as final MLE (e.g. log); for fair benchmarks vs lineal ARIMA
         self.order_ = None
         self.parameters_ = None
         self.results_ = {
@@ -160,6 +164,7 @@ class ParallelARIMAWorkflow:
             'step2_3_combinations': None,
             'step4_5_sliding_fitting': None,
             'step6_model_selection': None,
+            'step6_full_sample_reconciliation': None,
             'step7_8_validation': None,
             'step9_diagnostics': None,
             'step10_adjustment': None,
@@ -184,11 +189,17 @@ class ParallelARIMAWorkflow:
         self._d_max = int(max(0, d_max))
         self._acf_pacf_alpha = float(acf_pacf_alpha)
         self._acf_pacf_max_lag = acf_pacf_max_lag
+        self._full_sample_reconcile = bool(full_sample_reconcile)
+        self._full_sample_reconcile_top_k = max(1, int(full_sample_reconcile_top_k))
 
         if self.verbose:
             print("✓ ParallelARIMAWorkflow initialized")
             print(f"  Spark session: {'Created' if self._owns_spark else 'Provided'}")
             print(f"  grid_mode: {self._grid_mode}, d_max: {self._d_max}")
+            print(
+                f"  full_sample_reconcile: {self._full_sample_reconcile} "
+                f"(top_k={self._full_sample_reconcile_top_k})"
+            )
     
     def __del__(self):
         """Cleanup Spark resources if we own the session"""
@@ -1071,6 +1082,131 @@ class ParallelARIMAWorkflow:
         
         return best_order, confidence_score
     
+    def _reconcile_order_full_sample_aic(
+        self,
+        working_data: np.ndarray,
+        sliding_best_order: Tuple[int, int, int],
+        sliding_confidence: float,
+    ) -> Tuple[Tuple[int, int, int], float]:
+        """
+        Re-rank top candidates from step 6 by AIC on the full working series.
+
+        Experimental workflows pick (p,d,q) from sliding-window AICc ranks; standard
+        ARIMA practice selects the order using the same sample as the final MLE fit.
+        This step evaluates the top-K orders from step 6 on ``working_data`` and
+        chooses the minimum-AIC fit, aligning selection with the final estimation sample.
+        """
+        step6 = self.results_.get("step6_model_selection") or {}
+        model_scores = step6.get("model_scores")
+        if model_scores is None or len(model_scores) == 0:
+            self.results_["step6_full_sample_reconciliation"] = {
+                "enabled": True,
+                "skipped": True,
+                "reason": "no model_scores",
+                "order_sliding": sliding_best_order,
+                "order_full_sample": sliding_best_order,
+            }
+            return sliding_best_order, sliding_confidence
+
+        data = np.asarray(working_data, dtype=float).ravel()
+        k = min(self._full_sample_reconcile_top_k, len(model_scores))
+        top = model_scores.nsmallest(k, "score")
+
+        seen = set()
+        candidates: List[Tuple[int, int, int]] = []
+        for _, row in top.iterrows():
+            t = (int(row["p"]), int(row["d"]), int(row["q"]))
+            if t not in seen:
+                seen.add(t)
+                candidates.append(t)
+
+        if sliding_best_order not in seen:
+            candidates.insert(0, sliding_best_order)
+
+        aic_by_order: Dict[Tuple[int, int, int], float] = {}
+        bic_by_order: Dict[Tuple[int, int, int], float] = {}
+        failed: List[Tuple[int, int, int]] = []
+
+        for t in candidates:
+            p, d, q = t
+            try:
+                model = ARIMAProcess(
+                    ar_order=p,
+                    diff_order=d,
+                    ma_order=q,
+                    trend="c",
+                    n_jobs=1,
+                )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    model.fit(data)
+                fp = model._fitted_params
+                aic = fp.get("aic")
+                bic = fp.get("bic")
+                if aic is None or not np.isfinite(aic):
+                    failed.append(t)
+                    continue
+                aic_by_order[t] = float(aic)
+                if bic is not None and np.isfinite(bic):
+                    bic_by_order[t] = float(bic)
+            except Exception:
+                failed.append(t)
+                continue
+
+        if not aic_by_order:
+            if self.verbose:
+                print(
+                    "\n  ⚠ Full-sample AIC reconciliation: all candidate fits failed; "
+                    "keeping sliding-window order."
+                )
+            self.results_["step6_full_sample_reconciliation"] = {
+                "enabled": True,
+                "skipped": False,
+                "failed_all": True,
+                "candidates_tried": candidates,
+                "failed": failed,
+                "order_sliding": sliding_best_order,
+                "order_full_sample": sliding_best_order,
+                "aic_by_order": {},
+            }
+            return sliding_best_order, sliding_confidence
+
+        best_t = min(aic_by_order.keys(), key=lambda x: aic_by_order[x])
+        best_aic = aic_by_order[best_t]
+        changed = best_t != sliding_best_order
+
+        if self.verbose:
+            print("\n" + "=" * 70)
+            print("STEP 6b: Full-sample order reconciliation (min AIC on full series)")
+            print("=" * 70)
+            print(f"  Candidates from sliding ranks (top {k}): {len(candidates)} unique orders")
+            for t in sorted(aic_by_order.keys(), key=lambda x: aic_by_order[x]):
+                mark = " ← selected" if t == best_t else ""
+                print(f"    ARIMA{t}: AIC={aic_by_order[t]:.2f}{mark}")
+            if changed:
+                print(
+                    f"  Order updated: ARIMA{sliding_best_order} (sliding) → ARIMA{best_t} (full-sample AIC)"
+                )
+            else:
+                print(f"  Order unchanged: ARIMA{best_t} (best full-sample AIC matches sliding pick)")
+
+        self.results_["step6_full_sample_reconciliation"] = {
+            "enabled": True,
+            "skipped": False,
+            "top_k": k,
+            "candidates_evaluated": list(aic_by_order.keys()),
+            "candidates_tried": candidates,
+            "failed_fits": failed,
+            "aic_by_order": {str(k): v for k, v in aic_by_order.items()},
+            "bic_by_order": {str(k): v for k, v in bic_by_order.items()},
+            "order_sliding": sliding_best_order,
+            "order_full_sample": best_t,
+            "best_full_sample_aic": best_aic,
+            "changed_from_sliding": changed,
+        }
+
+        return best_t, sliding_confidence
+    
     # =========================================================================
     # STEP 7: Create Fixed Windows for Validation
     # =========================================================================
@@ -1843,8 +1979,13 @@ class ParallelARIMAWorkflow:
         # STEP 5: Parallel fitting with Spark
         sliding_results = self._fit_models_parallel_sliding(sliding_windows, combinations)
         
-        # STEP 6: Select global model
+        # STEP 6: Select global model (sliding windows + AICc ranks)
         best_order, confidence = self._select_global_model(sliding_results)
+        # STEP 6b: Reconcile with full-sample AIC on top-K candidates (closer to textbook ARIMA)
+        if self._full_sample_reconcile:
+            best_order, confidence = self._reconcile_order_full_sample_aic(
+                working_data, best_order, confidence
+            )
         self.order_ = best_order
         
         # STEP 7: Create fixed windows for validation
@@ -1907,6 +2048,7 @@ class ParallelARIMAWorkflow:
         }
         
         self.fitted_ = True
+        self.working_data_ = np.asarray(working_data, dtype=float).copy()
         
         if self.verbose:
             print(f"  ✓ Model fitted successfully")
@@ -2062,6 +2204,23 @@ class ParallelARIMAWorkflow:
             summary.append(f"  Selected from: {self.results_['step2_3_combinations']['num_combinations']} combinations")
             summary.append(f"  Confidence score: {sel['confidence_score']:.2f}")
             summary.append(f"  Appeared in: {sel['best_metrics']['appearance_count']}/{sel['best_metrics']['num_windows']} windows")
+            summary.append("")
+        
+        rec = self.results_.get("step6_full_sample_reconciliation")
+        if rec and not rec.get("skipped") and rec.get("enabled"):
+            summary.append("Full-sample AIC reconciliation (step 6b):")
+            if rec.get("changed_from_sliding"):
+                summary.append(
+                    f"  Order: ARIMA{tuple(rec['order_sliding'])} (sliding) → "
+                    f"ARIMA{tuple(rec['order_full_sample'])} (min AIC on full series)"
+                )
+            else:
+                summary.append(
+                    f"  Order: ARIMA{tuple(rec['order_full_sample'])} "
+                    "(matches sliding pick; best full-sample AIC among candidates)"
+                )
+            if rec.get("best_full_sample_aic") is not None:
+                summary.append(f"  Best full-sample AIC: {rec['best_full_sample_aic']:.4f}")
             summary.append("")
         
         # Validation metrics
