@@ -8,8 +8,8 @@ import io
 import base64
 import logging
 
-# Import TSLib components
-from tslib import ARModel, MAModel, ARMAModel, ARIMAModel
+# Import TSLib components (ARIMA lineal en la app usa statsmodels, no ARIMAModel)
+from tslib import ARModel, MAModel, ARMAModel
 from tslib.preprocessing.validation import DataValidator
 from tslib.preprocessing import suggest_datetime_column, suggest_numeric_columns
 
@@ -61,6 +61,55 @@ def _seasonality_periods(validation_report: Optional[Dict[str, Any]]) -> List[in
     return [int(p) for p in periods] if periods else []
 
 
+class StatsmodelsFittedARIMA:
+    """
+    Thin wrapper around statsmodels ARIMA fit result for the Shiny app (linear route).
+
+    Paralelo ARIMA uses ParallelARIMAWorkflow (11-step Spark); lineal ARIMA uses this.
+    """
+
+    def __init__(self, order: Tuple[int, int, int], data: np.ndarray, result: Any):
+        self.order = (int(order[0]), int(order[1]), int(order[2]))
+        self._data = np.asarray(data, dtype=float).ravel()
+        self._result = result
+        self.backend_ = "statsmodels"
+        aic = getattr(result, "aic", None)
+        bic = getattr(result, "bic", None)
+        self._fitted_params = {
+            "aic": float(aic) if aic is not None else None,
+            "bic": float(bic) if bic is not None else None,
+        }
+
+    def predict(
+        self,
+        steps: int = 10,
+        return_conf_int: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        fc = self._result.get_forecast(steps=steps)
+        mean = np.asarray(fc.predicted_mean, dtype=float).ravel()
+        if not return_conf_int:
+            return mean
+        conf = fc.conf_int()
+        # statsmodels may return a DataFrame (iloc) or ndarray depending on version
+        if hasattr(conf, "iloc"):
+            lower = np.asarray(conf.iloc[:, 0], dtype=float).ravel()
+            upper = np.asarray(conf.iloc[:, 1], dtype=float).ravel()
+        else:
+            arr = np.asarray(conf, dtype=float)
+            if arr.ndim == 2 and arr.shape[1] >= 2:
+                lower = arr[:, 0].ravel()
+                upper = arr[:, 1].ravel()
+            else:
+                raise RuntimeError(
+                    f"Unexpected conf_int shape: {getattr(arr, 'shape', None)}"
+                )
+        return mean, (lower, upper)
+
+    def get_residuals(self) -> np.ndarray:
+        return np.asarray(self._result.resid, dtype=float).ravel()
+
+
 def _require_complete_numeric_series(data: np.ndarray) -> np.ndarray:
     """
     Require a finite numeric series with no NaN (no imputation in this app).
@@ -110,6 +159,26 @@ class TSLibService:
     
     def __init__(self):
         self.validator = DataValidator()
+
+    def fit_statsmodels_arima(
+        self,
+        data: np.ndarray,
+        order: Tuple[int, int, int],
+    ) -> StatsmodelsFittedARIMA:
+        """
+        Fit ARIMA via statsmodels (linear baseline). Series must be finite with no NaN.
+
+        Use together with Spark ``ParallelARIMAWorkflow``: prefer the workflow's ``order_``
+        so both routes share the same (p,d,q) for comparison.
+        """
+        from statsmodels.tsa.arima.model import ARIMA
+
+        data_clean = _require_complete_numeric_series(data)
+        p, d, q = int(order[0]), int(order[1]), int(order[2])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = ARIMA(data_clean, order=(p, d, q)).fit()
+        return StatsmodelsFittedARIMA((p, d, q), data_clean, res)
 
     def get_spark_parallel_status(self, model_type: Optional[str] = None) -> Dict[str, Any]:
         """Return Spark availability status for parallel execution in UI."""
@@ -290,11 +359,17 @@ class TSLibService:
                     **kwargs
                 )
             elif model_type == 'ARIMA':
-                model = ARIMAModel(
-                    order=order if not auto_select else None,
-                    auto_select=auto_select,
-                    validation=True,
-                    **kwargs
+                if auto_select:
+                    raise ValueError(
+                        "ARIMA lineal usa statsmodels con orden (p,d,q) fijo. "
+                        "Ejecuta el análisis desde la app (workflow Spark primero, luego statsmodels) "
+                        "o llama a fit_statsmodels_arima(data, (p,d,q))."
+                    )
+                if order is None or len(order) != 3:
+                    raise ValueError("ARIMA requiere order=(p, d, q).")
+                return self.fit_statsmodels_arima(
+                    data_clean,
+                    (int(order[0]), int(order[1]), int(order[2])),
                 )
             else:
                 raise ValueError(f"Modelo no soportado: {model_type}")
@@ -598,7 +673,10 @@ class TSLibService:
         manual_max_q: Optional[int] = None,
     ) -> Any:
         """
-        Fit parallel ARIMA using Spark workflow only. Series must be complete (no NaN).
+        Fit ARIMA via Spark ``ParallelARIMAWorkflow`` (11-step methodology).
+
+        This is the only ARIMA parallel path in the app (not ``parallel_arima.py`` UDFs).
+        Series must be complete (no NaN).
         """
         if not PARALLEL_ARIMA_AVAILABLE or ParallelARIMAWorkflow is None:
             raise RuntimeError(
@@ -625,7 +703,9 @@ class TSLibService:
         validation_report: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, Dict[str, Any]]:
         """
-        Fit/forecast parallel model via Spark for AR/MA/ARMA/ARIMA.
+        Fit/forecast via Spark: ARIMA uses ``ParallelARIMAWorkflow`` (11 steps only);
+        AR/MA/ARMA use ``GenericParallelProcessor`` until dedicated parallel paths exist.
+
         Series must be complete (no NaN). Returns a workflow-like object plus forecast dict.
         """
         if not SPARK_AVAILABLE:

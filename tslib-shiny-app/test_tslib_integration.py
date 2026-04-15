@@ -80,12 +80,7 @@ def test_tslib_integration():
     print("Testing ARIMA Model")
     print("-" * 60)
     try:
-        arima_model = service.fit_model(
-            data=data,
-            model_type='ARIMA',
-            order=(1, 1, 1),
-            auto_select=True
-        )
+        arima_model = service.fit_statsmodels_arima(data, (1, 1, 1))
         print(f"✓ ARIMA model fitted successfully")
         print(f"  - Order: {arima_model.order}")
         

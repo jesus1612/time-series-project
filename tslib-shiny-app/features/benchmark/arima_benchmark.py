@@ -17,7 +17,6 @@ from tslib.benchmarks.arima_evaluation import (
     statsmodels_arima_forecast,
 )
 from tslib.metrics.evaluation import ForecastMetrics
-from tslib.models.arima_model import ARIMAModel
 
 DEFAULT_N_GRID = [100, 500, 1000, 2000, 5000, 10000]
 
@@ -77,10 +76,8 @@ def _time_call(fn: Callable[[], Any], repeats: int = 2) -> float:
 
 
 def _linear_fit_predict(train: np.ndarray, order: Tuple[int, int, int], horizon: int) -> np.ndarray:
-    m = ARIMAModel(order=order, auto_select=False, validation=False, n_jobs=1)
-    m.fit(train)
-    out = m.predict(steps=horizon, return_conf_int=False)
-    return np.asarray(out, dtype=float).ravel()
+    """Local linear ARIMA via statsmodels (same role as the main app lineal route)."""
+    return statsmodels_arima_forecast(train, order, horizon)
 
 
 def _workflow_fit_predict(
@@ -147,7 +144,7 @@ def _spark_statsmodels_forecast(
 
 
 class ARIMABenchmarkSuite:
-    """Run performance and accuracy comparisons for the three ARIMA backends."""
+    """Performance and accuracy: Spark workflow (11-step) vs statsmodels lineal (+ optional routes)."""
 
     def __init__(self, sampler_dir: Optional[Path] = None):
         self.sampler_dir = Path(sampler_dir) if sampler_dir else default_sampler_datasets_dir()
@@ -419,7 +416,7 @@ class ARIMABenchmarkSuite:
         return fig
 
     def build_performance_speedup_figure(self, perf: Dict[str, Any]) -> plt.Figure:
-        """Speedup vs TSLib lineal (ratio >1 means faster than linear TSLib)."""
+        """Speedup vs statsmodels lineal (ratio >1 means faster than linear statsmodels)."""
         fig, ax1 = plt.subplots(figsize=(11, 4.2))
         sw = perf.get("speedup_linear_vs_workflow") or {}
         ss = perf.get("speedup_linear_vs_spark_sm") or {}
@@ -455,7 +452,7 @@ class ARIMABenchmarkSuite:
         ax1.set_xscale("log")
         ax1.set_xlabel("n_obs")
         ax1.set_ylabel("Speedup (t_lineal / t_otro)")
-        ax1.set_title("Aceleración respecto a TSLib lineal")
+        ax1.set_title("Aceleración respecto a statsmodels lineal")
         ax1.grid(True, alpha=0.3)
         ax1.legend(
             fontsize=8,
@@ -499,7 +496,7 @@ class ARIMABenchmarkSuite:
         order: Tuple[int, int, int] = (1, 1, 1),
     ) -> plt.Figure:
         """
-        ACF/PACF of training series + residuals and Q-Q after TSLib linear fit (same order as benchmark).
+        ACF/PACF of training series + residuals and Q-Q after statsmodels linear fit (same order as benchmark).
         """
         from scipy import stats as scipy_stats
         from tslib.core.acf_pacf import ACFCalculator, PACFCalculator
@@ -522,12 +519,15 @@ class ARIMABenchmarkSuite:
         axes[0, 1].set_title("PACF (serie de entrenamiento)")
         axes[0, 1].set_xlabel("Retardo")
 
-        m = ARIMAModel(order=order, auto_select=False, validation=False, n_jobs=1)
-        m.fit(train)
-        res = m.get_residuals()
+        from statsmodels.tsa.arima.model import ARIMA
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sm_res = ARIMA(train, order=order).fit()
+        res = np.asarray(sm_res.resid, dtype=float)
         axes[1, 0].plot(res, color=COLOR_SM_REF, lw=0.9)
         axes[1, 0].axhline(0, color=COLOR_TSLIB, ls="--", lw=0.8)
-        axes[1, 0].set_title(f"Residuos TSLib lineal ARIMA{order}")
+        axes[1, 0].set_title(f"Residuos statsmodels lineal ARIMA{order}")
         axes[1, 0].set_xlabel("t")
 
         if len(res) > 8 and np.std(res) > 1e-12:
@@ -569,7 +569,7 @@ class ARIMABenchmarkSuite:
     ) -> Optional[plt.Figure]:
         """
         |error| per out-of-sample step: ParallelARIMAWorkflow (when Spark is available) vs
-        TSLib lineal, statsmodels local, and optionally Spark+statsmodels — same routes as
+        statsmodels lineal, and optionally Spark+statsmodels — same routes as
         run_accuracy_benchmark.
         """
         path = self.sampler_dir / csv_name
