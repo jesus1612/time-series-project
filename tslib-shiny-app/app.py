@@ -1127,7 +1127,7 @@ def server(input, output, session):
             ui.tags.p(f"Columna de datos: {value_col}"),
             ui.tags.p(f"Auto-selección: {'Sí' if auto_select else 'No'}"),
             ui.tags.p(f"Orden efectivo: {order_text}") if order_text else None,
-            ui.tags.p(f"Backend paralelo ARIMA: {parallel_backend}") if parallel_backend else None,
+            ui.tags.p(f"Backend paralelo (Spark): {parallel_backend}") if parallel_backend else None,
             class_="text-muted"
         )
 
@@ -1266,7 +1266,7 @@ def server(input, output, session):
         _mt = state.get("model_type")
         parallel_workflow = state.get("parallel_workflow")
 
-        dual = _mt == "ARIMA" and parallel_workflow is not None
+        dual = _mt in ("ARIMA", "AR") and parallel_workflow is not None
 
         if dual:
             metrics_par = tslib_service.get_parallel_model_metrics(parallel_workflow, model_type=_mt)
@@ -1341,7 +1341,7 @@ def server(input, output, session):
         values: List[float] = []
         colors: List[str] = []
 
-        if mt == "ARIMA":
+        if mt in ("ARIMA", "AR"):
             if t_lin is not None:
                 labels.append("Lineal (statsmodels, alineado)")
                 values.append(float(t_lin))
@@ -1412,7 +1412,7 @@ def server(input, output, session):
         mt = state.get("model_type")
 
         if (
-            mt == "ARIMA"
+            mt in ("ARIMA", "AR")
             and forecast_results
             and parallel_forecast_results
             and _has_forecast_values(forecast_results)
@@ -1489,7 +1489,7 @@ def server(input, output, session):
         pfc = pr.get("forecast", [])
 
         if (
-            state.get("model_type") == "ARIMA"
+            state.get("model_type") in ("ARIMA", "AR")
             and _forecast_seq_len(pfc) > 0
             and _forecast_seq_len(forecast) > 0
         ):
@@ -1527,8 +1527,8 @@ def server(input, output, session):
     def forecast_diff_horizon_plot():
         """|lineal − paralelo| por horizonte (solo ARIMA con ambas rutas), interactivo."""
         state = app_state.get()
-        if not state.get("analysis_complete") or state.get("model_type") != "ARIMA":
-            return _plotly_empty_fig("Solo aplica con ARIMA y ambas rutas")
+        if not state.get("analysis_complete") or state.get("model_type") not in ("ARIMA", "AR"):
+            return _plotly_empty_fig("Solo aplica con ARIMA/AR y ambas rutas")
         fr = state.get("forecast_results") or {}
         pr = state.get("parallel_forecast_results") or {}
         a = _as_forecast_array(fr)
@@ -1615,7 +1615,11 @@ def server(input, output, session):
     def linear_model_title():
         """Show linear model title (statsmodels for ARIMA, TSLib for AR/MA/ARMA)."""
         mt = app_state.get().get("model_type")
-        label = "Modelo lineal" if mt == "ARIMA" else "Modelo lineal (TSLib)"
+        label = (
+            "Modelo lineal (statsmodels)"
+            if mt in ("ARIMA", "AR")
+            else "Modelo lineal (TSLib)"
+        )
         return ui.tags.h4(label, class_="mb-3")
     
     @render.ui
@@ -1714,7 +1718,7 @@ def server(input, output, session):
 
         cards = []
 
-        if model_type == "ARIMA":
+        if model_type in ("ARIMA", "AR"):
             if comparison:
                 cards.append(
                     create_metric_card(
@@ -1809,7 +1813,7 @@ def server(input, output, session):
             return _plotly_empty_fig("Ejecuta el análisis primero")
 
         if (
-            state.get("model_type") == "ARIMA"
+            state.get("model_type") in ("ARIMA", "AR")
             and state.get("forecast_results")
             and state.get("parallel_forecast_results")
             and _has_forecast_values(state.get("forecast_results"))
@@ -1886,7 +1890,7 @@ def server(input, output, session):
             return ui.div(ui.tags.p("Ejecuta el análisis primero", class_="text-muted"))
 
         if (
-            state.get("model_type") == "ARIMA"
+            state.get("model_type") in ("ARIMA", "AR")
             and _has_forecast_values(state.get("forecast_results"))
             and _has_forecast_values(state.get("parallel_forecast_results"))
         ):
@@ -2188,6 +2192,10 @@ def server(input, output, session):
                 exec_log.append(
                     "Secuencia ARIMA: paralelo Spark (workflow 11 pasos) → lineal statsmodels (mismo orden cuando Spark OK)."
                 )
+            elif model_type == "AR":
+                exec_log.append(
+                    "Secuencia AR: paralelo Spark (ParallelARWorkflow) → lineal statsmodels ARIMA(p,0,0) alineado."
+                )
             else:
                 exec_log.append("Ajustando modelo...")
             new_state["execution_log"] = exec_log
@@ -2274,6 +2282,98 @@ def server(input, output, session):
                     )
 
                 fitted_model, w_fit = run_with_recorded_warnings(_fit_linear_statsmodels)
+                time_linear_fit_s = float(time.perf_counter() - t_lin0)
+                time_statsmodels_fit_s = time_linear_fit_s
+                runtime_msgs.extend(w_fit)
+
+                effective_order = str(fitted_model.order)
+                new_state = app_state.get().copy()
+                new_state["execution_log"].append(f"Orden efectivo lineal (statsmodels): {effective_order}")
+                app_state.set(new_state)
+
+                new_state = app_state.get().copy()
+                new_state["execution_log"].append("Generando pronóstico (statsmodels)...")
+                app_state.set(new_state)
+
+                forecast_results, w_fc = run_with_recorded_warnings(
+                    lambda: tslib_service.get_forecast(
+                        model=fitted_model,
+                        steps=forecast_steps,
+                        return_conf_int=include_conf,
+                    )
+                )
+                runtime_msgs.extend(w_fc)
+
+            elif model_type == "AR":
+                parallel_workflow = None
+                parallel_forecast_results = None
+                time_parallel_fit_s = None
+                new_state = app_state.get().copy()
+                new_state["execution_log"].append(
+                    "Ajustando AR paralelo (Spark, ParallelARWorkflow)..."
+                )
+                app_state.set(new_state)
+                try:
+                    t_par0 = time.perf_counter()
+                    parallel_workflow, parallel_forecast_results = tslib_service.fit_parallel_model_spark(
+                        data=data,
+                        model_type=model_type,
+                        order=placeholder_order,
+                        steps=forecast_steps,
+                        validation_report=quality_report,
+                    )
+                    time_parallel_fit_s = float(time.perf_counter() - t_par0)
+                    new_state = app_state.get().copy()
+                    backend = getattr(parallel_workflow, "backend_", "desconocido")
+                    new_state["execution_log"].append(f"✓ AR paralelo completado (backend: {backend})")
+                    app_state.set(new_state)
+                except Exception as e:
+                    error_msg = f"Ruta paralela Spark (AR): {type(e).__name__}: {str(e)}"
+                    logger.error(error_msg)
+                    logger.error(traceback.format_exc())
+                    new_state = app_state.get().copy()
+                    new_state["execution_log"].append(f"⚠ {error_msg}")
+                    app_state.set(new_state)
+
+                if parallel_forecast_results:
+                    runtime_msgs.extend(
+                        parallel_forecast_results.get("parallel_runtime_warnings") or []
+                    )
+
+                if parallel_workflow is not None and getattr(parallel_workflow, "order_", None) is not None:
+                    po = parallel_workflow.order_
+                    sm_order = (int(po[0]), 0, 0)
+                    new_state = app_state.get().copy()
+                    new_state["execution_log"].append(
+                        f"Orden statsmodels alineado: ARIMA{sm_order} (AR clásico sobre serie de trabajo)"
+                    )
+                    app_state.set(new_state)
+                elif order is not None and len(order) >= 1:
+                    sm_order = (int(order[0]), 0, 0)
+                else:
+                    sm_order = (1, 0, 0)
+                    runtime_msgs.append(
+                        "AR lineal: orden (1,0,0) por defecto (sin orden del workflow ni p manual)."
+                    )
+
+                new_state = app_state.get().copy()
+                new_state["execution_log"].append("Ajustando AR lineal (statsmodels, ARIMA(p,0,0))...")
+                app_state.set(new_state)
+
+                t_lin0 = time.perf_counter()
+
+                def _fit_linear_ar_statsmodels():
+                    if parallel_workflow is not None and getattr(
+                        parallel_workflow, "working_data_", None
+                    ) is not None:
+                        return tslib_service.fit_statsmodels_ar_aligned_to_parallel_ar_workflow(
+                            parallel_workflow
+                        )
+                    return tslib_service.fit_statsmodels_arima(
+                        np.asarray(data, dtype=float), sm_order
+                    )
+
+                fitted_model, w_fit = run_with_recorded_warnings(_fit_linear_ar_statsmodels)
                 time_linear_fit_s = float(time.perf_counter() - t_lin0)
                 time_statsmodels_fit_s = time_linear_fit_s
                 runtime_msgs.extend(w_fit)

@@ -23,6 +23,7 @@ Parallel workflows:
     GenericParallelProcessor — AR, MA, ARMA, and ARIMA on many series (Pandas UDF)
     ParallelARIMAProcessor — ARIMA-focused fit+predict via Pandas UDF
     ParallelARIMAWorkflow  — full 11-step parallel batch ARIMA workflow
+    ParallelARWorkflow     — parallel classic AR(p) workflow (same methodology, q=0)
 
 Session policy:
     ensure_spark_session — verify PySpark, validate or start SparkSession (master, spark_config)
@@ -42,6 +43,7 @@ from .ensure import DISTRIBUTED_REQUIRES_SPARK, ensure_spark_session
 if check_spark_availability():
     from .parallel_arima import fit_predict_arima_udf, ParallelARIMAProcessor
     from .parallel_arima_workflow import ParallelARIMAWorkflow
+    from .parallel_ar_workflow import ParallelARWorkflow
     from .parallel_processor import GenericParallelProcessor
     from .acf_pacf import SparkACFCalculator, SparkPACFCalculator, SparkACFPACFAnalyzer
     from .optimization import SparkMLEOptimizer
@@ -64,6 +66,7 @@ if check_spark_availability():
         "fit_predict_arima_udf",
         "ParallelARIMAProcessor",
         "ParallelARIMAWorkflow",
+        "ParallelARWorkflow",
         # Generic parallel processor (all model types)
         "GenericParallelProcessor",
     ]

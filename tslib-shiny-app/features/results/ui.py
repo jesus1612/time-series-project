@@ -30,7 +30,7 @@ def render_results_ui() -> ui.Tag:
             ui.div(
                 ui.tags.h5("Tiempos de ejecución:"),
                 ui.tags.p(
-                    "Barras interactivas (zoom). ARIMA: lineal, paralelo total, warm-up Spark y distribución del DataFrame de tareas; otros modelos: lineal vs paralelo.",
+                    "Barras interactivas (zoom). ARIMA y AR: lineal, paralelo total, warm-up Spark y distribución del DataFrame de tareas; otros modelos: lineal vs paralelo.",
                     class_="text-muted small mb-1",
                 ),
                 output_widget("execution_timing_plot", height="380px"),
