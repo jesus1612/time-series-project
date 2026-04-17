@@ -68,6 +68,9 @@ derby.log
 !sampler/datasets/**/*.csv
 !tslib-shiny-app/data/**/*.csv
 
+sampler/datasets/nyc_yellow_taxi_trip_sample.csv
+sampler/datasets/tfl_journey_sample.csv
+
 # Data directories (library convention); keep Shiny example data
 data/
 !tslib-shiny-app/data/

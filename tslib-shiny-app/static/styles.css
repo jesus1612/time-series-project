@@ -708,6 +708,65 @@ input[type="number"].shiny-bound-input:focus {
   margin: 0;
 }
 
+.metric-dual-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-bottom: var(--spacing-xs);
+  align-items: center;
+}
+
+.metric-value--route-lineal {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--accent2);
+  line-height: 1.2;
+}
+
+.metric-value--route-paralelo {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #e879a8;
+  line-height: 1.2;
+}
+
+/* Lineal vs paralelo legend (results metrics) */
+.metrics-palette-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm) var(--spacing-xl);
+  align-items: center;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.metrics-palette-swatch {
+  padding-left: 1rem;
+  position: relative;
+}
+
+.metrics-palette-swatch::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.35em;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 2px;
+}
+
+.metrics-palette-swatch--lineal::before {
+  background: var(--accent2);
+}
+
+.metrics-palette-swatch--paralelo::before {
+  background: #e879a8;
+}
+
 /* Responsive design */
 @media (max-width: 768px) {
   .stepper-container {

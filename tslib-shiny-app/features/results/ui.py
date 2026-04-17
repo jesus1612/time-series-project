@@ -27,6 +27,15 @@ def render_results_ui() -> ui.Tag:
                 ui.output_ui("metrics_cards"),
                 class_="mb-4"
             ),
+            ui.div(
+                ui.tags.h5("Tiempos de ejecución:"),
+                ui.tags.p(
+                    "Barras interactivas (zoom). ARIMA: lineal, paralelo total, warm-up Spark y distribución del DataFrame de tareas; otros modelos: lineal vs paralelo.",
+                    class_="text-muted small mb-1",
+                ),
+                output_widget("execution_timing_plot", height="380px"),
+                class_="mb-4"
+            ),
             # Linear model results section (only show title for ARIMA)
             ui.div(
                 ui.output_ui("linear_model_title"),
@@ -53,26 +62,26 @@ def render_results_ui() -> ui.Tag:
                 ),
                 # Diagnostics
                 ui.div(
-                    ui.tags.h5("Diagnósticos del modelo:"),
+                    ui.tags.h5("Diagnósticos del modelo (interactivos: zoom/pan):"),
                     ui.div(
                         ui.div(
-                            ui.output_plot("residuals_plot", height="300px"),
+                            output_widget("residuals_plot", height="320px"),
                             class_="col-md-6"
                         ),
                         ui.div(
-                            ui.output_plot("residuals_acf_plot", height="300px"),
+                            output_widget("residuals_acf_plot", height="320px"),
                             class_="col-md-6"
                         ),
                         class_="row"
                     ),
                     ui.div(
                         ui.tags.h6("Histograma y Q-Q de residuos", class_="mt-3"),
-                        ui.output_plot("eval_residual_hist_qq_plot", height="360px"),
+                        output_widget("eval_residual_hist_qq_plot", height="380px"),
                         class_="mb-3",
                     ),
                     ui.div(
                         ui.tags.h6("Residuos estandarizados", class_="mt-2"),
-                        ui.output_plot("eval_standardized_residuals_plot", height="280px"),
+                        output_widget("eval_standardized_residuals_plot", height="300px"),
                         class_="mb-3",
                     ),
                     class_="mb-4"

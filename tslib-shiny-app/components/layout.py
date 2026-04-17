@@ -1,4 +1,6 @@
 # Layout components for consistent app structure
+from typing import Optional
+
 from shiny import ui
 
 def create_app_layout(title: str, subtitle: str = None) -> ui.Tag:
@@ -45,6 +47,29 @@ def create_metric_card(value: str, label: str, icon: str = None) -> ui.Tag:
             class_="metric-content"
         ),
         class_="metric-card"
+    )
+
+
+def create_dual_route_metric_card(
+    label: str,
+    icon: Optional[str],
+    lineal_value: str,
+    paralelo_value: str,
+) -> ui.Tag:
+    """Metric card with lineal (green) and paralelo (pink) values stacked; use with metrics-palette-key legend."""
+
+    return ui.div(
+        ui.div(
+            ui.div(icon, class_="metric-icon") if icon else None,
+            ui.div(
+                ui.div(lineal_value, class_="metric-value metric-value--route-lineal"),
+                ui.div(paralelo_value, class_="metric-value metric-value--route-paralelo"),
+                class_="metric-dual-stack",
+            ),
+            ui.tags.p(label, class_="metric-label"),
+            class_="metric-content",
+        ),
+        class_="metric-card",
     )
 
 def create_form_group(label: str, control: ui.Tag, help_text: str = None) -> ui.Tag:

@@ -16,6 +16,7 @@ Process Overview:
 11. Final forecast
 """
 
+import time
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional, Tuple, List, Union, Literal
@@ -157,6 +158,7 @@ class ParallelARIMAWorkflow:
         # Results storage
         self.data_ = None
         self.working_data_ = None  # Same scale as final MLE (e.g. log); for fair benchmarks vs lineal ARIMA
+        self.spark_timing_: Dict[str, float] = {}
         self.order_ = None
         self.parameters_ = None
         self.results_ = {
@@ -777,6 +779,15 @@ class ParallelARIMAWorkflow:
         num_partitions = max(1, min(len(tasks_pandas), 
                                     self.spark.sparkContext.defaultParallelism))
         tasks_df = tasks_df.repartition(num_partitions)
+
+        # Time to materialize / distribute task rows across partitions (cache + count)
+        td0 = time.perf_counter()
+        tasks_df = tasks_df.cache()
+        try:
+            _ = tasks_df.count()
+        except Exception:
+            pass
+        self.spark_timing_["tasks_dataframe_distribute_s"] = float(time.perf_counter() - td0)
         
         if self.verbose:
             sc = self.spark.sparkContext
@@ -926,7 +937,6 @@ class ParallelARIMAWorkflow:
             if results:
                 yield pd.DataFrame(results)
         if self.verbose:
-            import time
             print(f"  🚀 Iniciando ejecución paralela...")
             start_time = time.time()
 
@@ -1470,8 +1480,6 @@ class ParallelARIMAWorkflow:
                 yield pd.DataFrame(rows_out)
 
         if self.verbose:
-            import time
-
             print("  🚀 Backtesting en Spark (mapInPandas)...")
             t0 = time.time()
 
@@ -1479,8 +1487,6 @@ class ParallelARIMAWorkflow:
         results_df = results_spark.toPandas()
 
         if self.verbose:
-            import time
-
             print(f"  ⏱️  Backtesting completado en {time.time() - t0:.2f}s")
 
         if "success" in results_df.columns:
@@ -1700,16 +1706,12 @@ class ParallelARIMAWorkflow:
                 yield pd.DataFrame(rows_out)
 
         if self.verbose:
-            import time
-
             print("  🚀 Diagnóstico de residuos en Spark (mapInPandas)...")
             t0 = time.time()
 
         diagnostics_df = tasks_df.mapInPandas(diagnose_map, schema=output_schema).toPandas()
 
         if self.verbose:
-            import time
-
             print(f"  ⏱️  Diagnóstico completado en {time.time() - t0:.2f}s")
 
         for col in ("success", "ljung_box_pass", "acf_pass", "overall_pass"):
@@ -1935,6 +1937,15 @@ class ParallelARIMAWorkflow:
         
         self.data_ = data
         n = len(data)
+        self.spark_timing_ = {}
+
+        # Spark executor warm-up (driver schedules minimal job; isolates JVM/executor overhead)
+        tw = time.perf_counter()
+        try:
+            self.spark.range(1).count()
+        except Exception:
+            pass
+        self.spark_timing_["executor_warmup_s"] = float(time.perf_counter() - tw)
         
         if self.verbose:
             _sc = self.spark.sparkContext
@@ -2049,6 +2060,7 @@ class ParallelARIMAWorkflow:
         
         self.fitted_ = True
         self.working_data_ = np.asarray(working_data, dtype=float).copy()
+        self.results_["spark_timing"] = dict(self.spark_timing_)
         
         if self.verbose:
             print(f"  ✓ Model fitted successfully")

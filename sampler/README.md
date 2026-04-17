@@ -33,6 +33,22 @@ python sampler/generate_datasets.py
 
 Requires: `numpy`, `pandas`; optional `statsmodels` for classic datasets.
 
+## Large real-world sources (not in git)
+
+Heavy public datasets for stress-testing the Spark workflow (download locally; do not commit multi‑GB files):
+
+| Source | Script | Notes |
+|--------|--------|--------|
+| **NYC Yellow Taxi Trip Data** (TLC) | `scripts/download_nyc_yellow_taxi_sample.py` | Parquet from `d37ci6vzurychx.cloudfront.net/trip-data/`. Requires `pandas`, `pyarrow`. Produces `datasets/nyc_yellow_taxi_trip_sample.csv`. |
+| **TfL Journey Data** (Transport for London) | `scripts/download_tfl_journey_sample.py` | Point `--path` to a CSV you downloaded from [TfL open data](https://data.tfl.gov.uk/). Produces `datasets/tfl_journey_sample.csv`. |
+
+Add to `.gitignore` if you store large CSVs under `datasets/`:
+
+```
+nyc_yellow_taxi_trip_sample.csv
+tfl_journey_sample.csv
+```
+
 ## Policy
 
 All sampler series are **complete** (no NaN), aligned with the app rule: missing values are not imputed.

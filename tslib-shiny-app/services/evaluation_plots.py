@@ -1,14 +1,171 @@
 """
 Matplotlib helpers for model evaluation (residuals, forecasts, comparisons).
+Plotly variants for interactive Shiny dashboards (zoom/pan).
 """
 from __future__ import annotations
 
 import warnings
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
+
+
+def _plotly_dark_layout(fig, title: str, *, yaxis_title: str = "", xaxis_title: str = "") -> None:
+    import plotly.graph_objects as go
+
+    assert isinstance(fig, go.Figure)
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#1a1a1a",
+        plot_bgcolor="#2d2d2d",
+        font=dict(color="#ececec", size=11),
+        title=dict(text=title, x=0.5),
+        xaxis=dict(title=xaxis_title or "Índice", gridcolor="#444444"),
+        yaxis=dict(title=yaxis_title, gridcolor="#444444"),
+        margin=dict(l=50, r=24, t=56, b=48),
+        dragmode="zoom",
+        hovermode="x unified",
+    )
+
+
+def plot_residuals_plotly(residuals: np.ndarray, title: str = "Residuos del modelo") -> Any:
+    import plotly.graph_objects as go
+
+    r = np.asarray(residuals, dtype=float).ravel()
+    x = np.arange(len(r))
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(x=x, y=r, mode="lines", name="Residuos", line=dict(color="#00d4aa", width=1))
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="#ff6b6b")
+    _plotly_dark_layout(fig, title, yaxis_title="Residuo", xaxis_title="Tiempo")
+    return fig
+
+
+def plot_residual_acf_plotly(residuals: np.ndarray, max_lag: int = 20, title: str = "ACF de residuos") -> Any:
+    import plotly.graph_objects as go
+
+    r = np.asarray(residuals, dtype=float).ravel()
+    try:
+        from tslib.core.acf_pacf import ACFCalculator
+
+        acf_calc = ACFCalculator(max_lags=max_lag, n_jobs=1)
+        acf_result = acf_calc.calculate(r)
+        if isinstance(acf_result, tuple) and len(acf_result) == 2:
+            _, acf_values = acf_result
+        else:
+            acf_values = acf_result
+        v = np.asarray(acf_values, dtype=float).ravel()[:max_lag]
+    except Exception:
+        v = np.array([], dtype=float)
+    if len(v) == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="ACF no disponible",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(color="#aaa"),
+        )
+        _plotly_dark_layout(fig, title)
+        return fig
+    lags = np.arange(len(v))
+    conf = 1.96 / np.sqrt(len(r)) if len(r) > 0 else 0.05
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=lags, y=v, name="ACF", marker_color="#00d4aa"))
+    fig.add_hline(y=conf, line_dash="dash", line_color="#ff6b6b", opacity=0.7)
+    fig.add_hline(y=-conf, line_dash="dash", line_color="#ff6b6b", opacity=0.7)
+    _plotly_dark_layout(fig, title, yaxis_title="ACF", xaxis_title="Lag")
+    return fig
+
+
+def plot_residual_hist_qq_plotly(residuals: np.ndarray) -> Any:
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    r = np.asarray(residuals, dtype=float).ravel()
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Histograma de residuos", "Q-Q (normal)"))
+    fig.add_trace(
+        go.Histogram(x=r, nbinsx=min(30, max(10, len(r) // 5)), name="Hist", marker_color="#0099cc"),
+        row=1,
+        col=1,
+    )
+    std_r = float(np.std(r)) if len(r) else 0.0
+    degenerate = len(r) < 3 or std_r < 1e-15 or (float(np.max(r)) - float(np.min(r))) < 1e-15
+    if degenerate:
+        fig.add_annotation(
+            text="Q–Q no aplicable",
+            xref="x2",
+            yref="y2",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(color="#aaa"),
+        )
+    else:
+        r_sorted = np.sort(r)
+        n = len(r_sorted)
+        p = (np.arange(1, n + 1) - 0.375) / (n + 0.25)
+        p = np.clip(p, 1e-6, 1.0 - 1e-6)
+        theoretical = stats.norm.ppf(p)
+        fig.add_trace(
+            go.Scatter(
+                x=theoretical,
+                y=r_sorted,
+                mode="markers",
+                name="Q-Q",
+                marker=dict(color="#00d4aa", size=5),
+            ),
+            row=1,
+            col=2,
+        )
+        t_q = stats.norm.ppf([0.25, 0.75])
+        s_q = np.percentile(r, [25, 75])
+        slope = (s_q[1] - s_q[0]) / (t_q[1] - t_q[0]) if abs(t_q[1] - t_q[0]) > 1e-12 else 1.0
+        intercept = s_q[0] - slope * t_q[0]
+        tx = np.array([float(theoretical.min()), float(theoretical.max())])
+        fig.add_trace(
+            go.Scatter(
+                x=tx,
+                y=slope * tx + intercept,
+                mode="lines",
+                name="referencia",
+                line=dict(color="#888", width=1),
+            ),
+            row=1,
+            col=2,
+        )
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#1a1a1a",
+        plot_bgcolor="#2d2d2d",
+        font=dict(color="#ececec"),
+        title=dict(text="Histograma y Q-Q de residuos", x=0.5),
+        margin=dict(l=50, r=24, t=56, b=48),
+        dragmode="zoom",
+        showlegend=False,
+    )
+    return fig
+
+
+def plot_standardized_residuals_plotly(residuals: np.ndarray, sigma: Optional[float] = None) -> Any:
+    import plotly.graph_objects as go
+
+    r = np.asarray(residuals, dtype=float).ravel()
+    s = float(sigma) if sigma is not None else float(np.std(r)) or 1.0
+    z = r / s
+    x = np.arange(len(z))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=z, mode="lines", line=dict(color="#feca57", width=1), name="z"))
+    fig.add_hline(y=2, line_dash="dot", line_color="#ff6b6b")
+    fig.add_hline(y=-2, line_dash="dot", line_color="#ff6b6b")
+    fig.add_hline(y=0, line_color="white", opacity=0.5)
+    _plotly_dark_layout(fig, "Residuos estandarizados (±2σ)", yaxis_title="z", xaxis_title="Índice")
+    return fig
 
 
 def style_dark_axes(ax: plt.Axes) -> None:

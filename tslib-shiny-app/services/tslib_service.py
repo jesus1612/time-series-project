@@ -1,4 +1,5 @@
 """Service layer: TSLib validation, model fit, forecast, exploratory analysis."""
+import re
 import warnings
 import pandas as pd
 import numpy as np
@@ -16,6 +17,37 @@ from tslib.preprocessing import suggest_datetime_column, suggest_numeric_columns
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def _statsmodels_start_params_from_workflow(mod: Any, workflow: Any) -> np.ndarray:
+    """
+    Map TSLib workflow ``parameters_`` (phi, theta, c, sigma2) onto statsmodels ARIMA
+    ``param_names`` order for ``start_params`` / ``maxiter=0`` smoothing.
+    """
+    pp = getattr(workflow, "parameters_", None) or {}
+    phi = list(pp.get("phi") or [])
+    theta = list(pp.get("theta") or [])
+    c = float(pp.get("c", 0.0))
+    sig = float(pp.get("sigma2", 1.0))
+    names = list(mod.param_names)
+    out = np.zeros(len(names), dtype=float)
+    for i, name in enumerate(names):
+        nlow = name.lower()
+        if "sigma" in nlow:
+            out[i] = sig
+        elif "const" in nlow or nlow in ("intercept", "drift"):
+            out[i] = c
+        elif name.startswith("ar.") or "ar.l" in nlow:
+            m = re.search(r"L(\d+)", name, re.I)
+            lag = int(m.group(1)) - 1 if m else 0
+            if 0 <= lag < len(phi):
+                out[i] = phi[lag]
+        elif name.startswith("ma.") or "ma.l" in nlow:
+            m = re.search(r"L(\d+)", name, re.I)
+            lag = int(m.group(1)) - 1 if m else 0
+            if 0 <= lag < len(theta):
+                out[i] = theta[lag]
+    return out
 
 
 def run_with_recorded_warnings(fn: Callable[[], T]) -> Tuple[T, List[str]]:
@@ -196,18 +228,19 @@ class TSLibService:
         p, d, q = int(order[0]), int(order[1]), int(order[2])
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            res = ARIMA(data_clean, order=(p, d, q)).fit()
+            res = ARIMA(data_clean, order=(p, d, q), trend="c").fit()
         return StatsmodelsFittedARIMA(
             (p, d, q), data_clean, res, inverse_forecast_fn=inverse_forecast_fn
         )
 
     def fit_statsmodels_arima_aligned_to_workflow(self, workflow: Any) -> StatsmodelsFittedARIMA:
         """
-        Fit statsmodels on the same series and order as a fitted ``ParallelARIMAWorkflow``.
-
-        Reduces train/distribution mismatch vs fitting statsmodels on raw levels when the
-        workflow used log or other preprocessing for ``working_data_``.
+        Fit statsmodels on ``working_data_`` and ``order_``, locking coefficients to the
+        experimental MLE (``workflow.parameters_``) when possible so forecasts compare the
+        same AR/MA structure as ``workflow._final_model``; falls back to a free MLE refit.
         """
+        from statsmodels.tsa.arima.model import ARIMA
+
         wd = getattr(workflow, "working_data_", None)
         order = getattr(workflow, "order_", None)
         if wd is None or order is None or len(order) != 3:
@@ -218,11 +251,46 @@ class TSLibService:
         lt = getattr(workflow, "_log_transformer", None)
         if lt is not None and hasattr(lt, "inverse_transform"):
             inv = lt.inverse_transform
-        return self.fit_statsmodels_arima(
-            np.asarray(wd, dtype=float),
-            (int(order[0]), int(order[1]), int(order[2])),
-            inverse_forecast_fn=inv,
-        )
+
+        y = np.asarray(wd, dtype=float).ravel()
+        y = _require_complete_numeric_series(y)
+        p, d, q = int(order[0]), int(order[1]), int(order[2])
+
+        mod = ARIMA(y, order=(p, d, q), trend="c")  # align with ARIMAProcess(..., trend='c')
+        try:
+            sp = _statsmodels_start_params_from_workflow(mod, workflow)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = mod.fit(
+                    start_params=sp,
+                    maxiter=0,
+                    method="statespace",
+                    disp=False,
+                )
+            return StatsmodelsFittedARIMA(
+                (p, d, q), y, res, inverse_forecast_fn=inv
+            )
+        except Exception as ex:
+            logger.warning(
+                "statsmodels maxiter=0 with experimental params failed (%s); refitting MLE on working_data_",
+                ex,
+            )
+            return self.fit_statsmodels_arima(y, (p, d, q), inverse_forecast_fn=inv)
+
+    def get_workflow_spark_timing(self, workflow: Any) -> Dict[str, float]:
+        """Return Spark timing dict from a fitted ``ParallelARIMAWorkflow`` (warmup, distribute, ...)."""
+        st = (getattr(workflow, "results_", None) or {}).get("spark_timing")
+        if st is None:
+            st = getattr(workflow, "spark_timing_", None)
+        if not isinstance(st, dict):
+            return {}
+        out: Dict[str, float] = {}
+        for k, v in st.items():
+            try:
+                out[str(k)] = float(v)
+            except (TypeError, ValueError):
+                pass
+        return out
 
     def get_spark_parallel_status(self, model_type: Optional[str] = None) -> Dict[str, Any]:
         """Return Spark availability status for parallel execution in UI."""

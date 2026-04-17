@@ -19,7 +19,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 from components.stepper import StepperComponent
-from components.layout import create_app_layout, create_data_table, create_metric_card, create_form_group, create_file_upload_area
+from components.layout import (
+    create_app_layout,
+    create_data_table,
+    create_metric_card,
+    create_dual_route_metric_card,
+    create_form_group,
+    create_file_upload_area,
+)
 from features.upload.ui import render_upload_ui
 from features.visualization.ui import render_visualization_ui
 from features.model_selection.ui import render_model_selection_ui
@@ -29,11 +36,13 @@ from features.benchmark.server import register_benchmark_server
 
 from services.tslib_service import TSLibService, run_with_recorded_warnings
 from services.evaluation_plots import (
-    plot_residual_histogram_and_qq,
-    plot_standardized_residuals,
+    plot_residual_acf_plotly,
+    plot_residual_hist_qq_plotly,
+    plot_residuals_plotly,
+    plot_standardized_residuals_plotly,
 )
 from config_limits import MAX_UPLOAD_FILE_BYTES
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import plotly.graph_objects as go
 from shinywidgets import render_plotly, output_widget
@@ -241,9 +250,9 @@ def server(input, output, session):
     # Initialize TSLib service
     tslib_service = TSLibService()
 
-    # ARIMA comparison colors: lineal (statsmodels) = rosa, paralelo (workflow Spark) = verde
-    _COL_ARIMA_LINEAL = "#e879a8"
-    _COL_ARIMA_PARALELO = "#2A9D8F"
+    # ARIMA comparison colors: lineal = verde, paralelo = rosa (aligned with métricas duales)
+    _COL_ARIMA_LINEAL = "#00d4aa"
+    _COL_ARIMA_PARALELO = "#e879a8"
 
     def _style_forecast_axes(ax, fig):
         ax.grid(True, alpha=0.3)
@@ -305,7 +314,7 @@ def server(input, output, session):
                         x=x_lin + x_lin[::-1],
                         y=lo_a[:n_lin].tolist() + up_a[:n_lin][::-1].tolist(),
                         fill="toself",
-                        fillcolor="rgba(232,121,168,0.15)",
+                        fillcolor="rgba(0,212,170,0.15)",
                         line=dict(color="rgba(0,0,0,0)"),
                         name="IC 95% lineal",
                         showlegend=True,
@@ -317,7 +326,7 @@ def server(input, output, session):
                     x=x_lin,
                     y=fc_lin.tolist(),
                     mode="lines",
-                    name="Pronóstico lineal (statsmodels)",
+                    name="Pronóstico lineal",
                     line=dict(color=_COL_ARIMA_LINEAL, width=2, dash="dash"),
                 )
             )
@@ -331,7 +340,7 @@ def server(input, output, session):
                         x=x_par + x_par[::-1],
                         y=lo_b[:n_par].tolist() + up_b[:n_par][::-1].tolist(),
                         fill="toself",
-                        fillcolor="rgba(42,157,143,0.15)",
+                        fillcolor="rgba(232,121,168,0.15)",
                         line=dict(color="rgba(0,0,0,0)"),
                         name="IC 95% paralelo",
                         showlegend=True,
@@ -343,11 +352,11 @@ def server(input, output, session):
                     x=x_par,
                     y=fc_par.tolist(),
                     mode="lines",
-                    name="Pronóstico paralelo (Spark)",
+                    name="Pronóstico paralelo",
                     line=dict(color=_COL_ARIMA_PARALELO, width=2, dash="dash"),
                 )
             )
-        return _plotly_forecast_layout(fig, "Pronóstico: statsmodels (rosa) vs workflow Spark (verde)")
+        return _plotly_forecast_layout(fig, "Pronóstico: lineal (verde) vs paralelo (rosa)")
 
     # Stepper header renderer
     @render.ui
@@ -1221,55 +1230,173 @@ def server(input, output, session):
     
     @render.ui
     def metrics_cards():
-        """Render metrics cards"""
+        """Render metrics cards (ARIMA + Spark: dual lineal/paralelo en la misma tarjeta y leyenda de color)."""
+
+        def _fmt_float_metric(x):
+            if x is None:
+                return "N/A"
+            try:
+                return f"{float(x):.2f}"
+            except (TypeError, ValueError):
+                return "N/A"
+
+        def _norm_order_par(s):
+            if not s or s == "N/A":
+                return "N/A"
+            t = str(s).strip()
+            if t.upper().startswith("ARIMA"):
+                rest = t[5:].strip()
+                return rest if rest else t
+            return t
+
         state = app_state.get()
         if not state.get("analysis_complete"):
             return ui.div(
                 ui.tags.p("Las métricas aparecerán después de ejecutar el análisis", class_="text-muted")
             )
-        
+
         fitted_model = state.get("fitted_model")
         if not fitted_model:
             return ui.div(ui.tags.p("No hay métricas disponibles", class_="text-muted"))
-        
-        metrics = tslib_service.get_model_metrics(fitted_model)
+
+        metrics_lin = tslib_service.get_model_metrics(fitted_model)
         em = state.get("execution_metadata") or {}
         t_lin = em.get("time_linear_fit_s")
+        t_par = em.get("time_parallel_fit_s")
         _mt = state.get("model_type")
-        _lineal_tag = "statsmodels" if _mt == "ARIMA" else "TSLib"
+        parallel_workflow = state.get("parallel_workflow")
+
+        dual = _mt == "ARIMA" and parallel_workflow is not None
+
+        if dual:
+            metrics_par = tslib_service.get_parallel_model_metrics(parallel_workflow, model_type=_mt)
+            legend = ui.div(
+                {"class": "metrics-palette-key mb-2"},
+                ui.tags.span("Lineal", class_="metrics-palette-swatch metrics-palette-swatch--lineal"),
+                ui.tags.span("Paralelo", class_="metrics-palette-swatch metrics-palette-swatch--paralelo"),
+            )
+            cards = [
+                create_dual_route_metric_card(
+                    "AIC",
+                    "📊",
+                    _fmt_float_metric(metrics_lin.get("aic")),
+                    _fmt_float_metric(metrics_par.get("aic")),
+                ),
+                create_dual_route_metric_card(
+                    "BIC",
+                    "📊",
+                    _fmt_float_metric(metrics_lin.get("bic")),
+                    _fmt_float_metric(metrics_par.get("bic")),
+                ),
+                create_dual_route_metric_card(
+                    "Orden",
+                    "⚙️",
+                    str(metrics_lin.get("order", "N/A")),
+                    _norm_order_par(metrics_par.get("order")),
+                ),
+            ]
+            return ui.div(legend, ui.div(*cards, class_="metrics-grid"))
 
         cards = [
             create_metric_card(
-                f"{metrics.get('aic', 0):.2f}" if metrics.get('aic') else "N/A",
-                f"AIC (lineal {_lineal_tag})",
+                _fmt_float_metric(metrics_lin.get("aic")),
+                "AIC",
                 "📊",
             ),
             create_metric_card(
-                f"{metrics.get('bic', 0):.2f}" if metrics.get('bic') else "N/A",
-                f"BIC (lineal {_lineal_tag})",
+                _fmt_float_metric(metrics_lin.get("bic")),
+                "BIC",
                 "📊",
             ),
             create_metric_card(
-                metrics.get('order', 'N/A'),
-                f"Orden (lineal {_lineal_tag})",
+                str(metrics_lin.get("order", "N/A")),
+                "Orden",
                 "⚙️",
             ),
         ]
         if t_lin is not None:
-            _time_label = (
-                "Tiempo ajuste lineal statsmodels (s)"
-                if _mt == "ARIMA"
-                else "Tiempo ajuste lineal TSLib (s)"
-            )
             cards.append(
                 create_metric_card(
                     f"{float(t_lin):.3f}",
-                    _time_label,
+                    "Tiempo de ajuste (s)",
                     "⏱",
                 )
             )
 
         return ui.div(*cards, class_="metrics-grid")
+    
+    @render_plotly
+    def execution_timing_plot():
+        """Bar chart: linear vs parallel wall time + Spark warm-up + task DF distribution."""
+        state = app_state.get()
+        if not state.get("analysis_complete"):
+            return _plotly_empty_fig("Ejecuta el análisis primero")
+        em = state.get("execution_metadata") or {}
+        mt = state.get("model_type")
+        t_lin = em.get("time_linear_fit_s")
+        t_par = em.get("time_parallel_fit_s")
+        st = em.get("spark_timing") or {}
+
+        labels: List[str] = []
+        values: List[float] = []
+        colors: List[str] = []
+
+        if mt == "ARIMA":
+            if t_lin is not None:
+                labels.append("Lineal (statsmodels, alineado)")
+                values.append(float(t_lin))
+                colors.append("#e879a8")
+            if t_par is not None:
+                labels.append("Paralelo (workflow total)")
+                values.append(float(t_par))
+                colors.append("#2A9D8F")
+            wu = st.get("executor_warmup_s")
+            dd = st.get("tasks_dataframe_distribute_s")
+            if wu is not None:
+                labels.append("Spark: warm-up ejecutores")
+                values.append(float(wu))
+                colors.append("#6c757d")
+            if dd is not None:
+                labels.append("Spark: distribución DF de tareas")
+                values.append(float(dd))
+                colors.append("#adb5bd")
+        else:
+            if t_lin is not None:
+                labels.append("Lineal (TSLib)")
+                values.append(float(t_lin))
+                colors.append("#e879a8")
+            if t_par is not None:
+                labels.append("Paralelo (Spark)")
+                values.append(float(t_par))
+                colors.append("#2A9D8F")
+
+        if not values:
+            return _plotly_empty_fig("Sin tiempos registrados")
+
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=labels,
+                    y=values,
+                    marker_color=colors,
+                    text=[f"{v:.4f} s" for v in values],
+                    textposition="auto",
+                )
+            ]
+        )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#1a1a1a",
+            plot_bgcolor="#2d2d2d",
+            font=dict(color="#ececec", size=11),
+            title=dict(text="Tiempos de ejecución (segundos)", x=0.5),
+            yaxis=dict(title="s", gridcolor="#444444", rangemode="tozero"),
+            xaxis=dict(tickangle=-28),
+            margin=dict(l=50, r=24, t=56, b=140),
+            dragmode="zoom",
+            showlegend=False,
+        )
+        return fig
     
     @render_plotly
     def forecast_plot():
@@ -1435,169 +1562,60 @@ def server(input, output, session):
         )
         return fig
     
-    @render.plot
+    @render_plotly
     def residuals_plot():
-        """Render residuals plot"""
+        """Residuals vs time (interactive)."""
         state = app_state.get()
         if not state.get("analysis_complete"):
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, 'Ejecuta el análisis primero', ha='center', va='center')
-            ax.axis('off')
-            return fig
-        
+            return _plotly_empty_fig("Ejecuta el análisis primero")
         fitted_model = state.get("fitted_model")
-        if not fitted_model or not hasattr(fitted_model, 'get_residuals'):
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, 'No hay residuos disponibles', ha='center', va='center')
-            ax.axis('off')
-            return fig
-        
+        if not fitted_model or not hasattr(fitted_model, "get_residuals"):
+            return _plotly_empty_fig("No hay residuos disponibles")
         residuals = fitted_model.get_residuals()
-        
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.plot(residuals, color='#00d4aa', linewidth=1, alpha=0.8)
-        ax.axhline(y=0, color='red', linestyle='--', linewidth=1)
-        ax.set_xlabel('Tiempo')
-        ax.set_ylabel('Residuos')
-        ax.set_title('Residuos del Modelo', fontsize=10, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        ax.set_facecolor('#2d2d2d')
-        fig.patch.set_facecolor('#1a1a1a')
-        ax.tick_params(colors='white')
-        ax.xaxis.label.set_color('white')
-        ax.yaxis.label.set_color('white')
-        ax.title.set_color('white')
-        
-        plt.tight_layout()
-        return fig
+        return plot_residuals_plotly(np.asarray(residuals, dtype=float))
     
-    @render.plot
+    @render_plotly
     def residuals_acf_plot():
-        """Render residuals ACF plot"""
+        """ACF of residuals (interactive)."""
         state = app_state.get()
         if not state.get("analysis_complete"):
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, 'Ejecuta el análisis primero', ha='center', va='center', color='white')
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.axis('off')
-            ax.set_facecolor('#2d2d2d')
-            fig.patch.set_facecolor('#1a1a1a')
-            return fig
-        
+            return _plotly_empty_fig("Ejecuta el análisis primero")
         fitted_model = state.get("fitted_model")
-        if not fitted_model or not hasattr(fitted_model, 'get_residuals'):
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, 'No hay residuos disponibles', ha='center', va='center', color='white')
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.axis('off')
-            ax.set_facecolor('#2d2d2d')
-            fig.patch.set_facecolor('#1a1a1a')
-            return fig
-        
+        if not fitted_model or not hasattr(fitted_model, "get_residuals"):
+            return _plotly_empty_fig("No hay residuos disponibles")
         residuals = fitted_model.get_residuals()
         try:
-            from tslib.core.acf_pacf import ACFCalculator
-            acf_calc = ACFCalculator()
-            acf_result = acf_calc.calculate(residuals)
-            if isinstance(acf_result, tuple) and len(acf_result) == 2:
-                lags, acf_values = acf_result
-            else:
-                acf_values = acf_result
-
-            if isinstance(acf_values, np.ndarray):
-                pass
-            elif isinstance(acf_values, list):
-                acf_values = np.array(acf_values)
-            else:
-                acf_values = np.array(list(acf_values)) if hasattr(acf_values, "__iter__") else np.array([])
-
-            if len(acf_values) > 20:
-                acf_values = acf_values[:20]
-
-            if acf_values is None or len(acf_values) == 0:
-                fig, ax = plt.subplots(figsize=(6, 3))
-                ax.text(0.5, 0.5, "ACF no disponible", ha="center", va="center", color="white")
-                ax.set_xlim(0, 1)
-                ax.set_ylim(0, 1)
-                ax.axis("off")
-                ax.set_facecolor("#2d2d2d")
-                fig.patch.set_facecolor("#1a1a1a")
-                return fig
-
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.stem(range(len(acf_values)), acf_values, linefmt="#00d4aa", markerfmt="o", basefmt=" ")
-            ax.axhline(y=0, color="white", linestyle="-", linewidth=0.5)
-            if len(residuals) > 0:
-                conf_level = 1.96 / np.sqrt(len(residuals))
-                ax.axhline(y=conf_level, color="red", linestyle="--", linewidth=1, alpha=0.7)
-                ax.axhline(y=-conf_level, color="red", linestyle="--", linewidth=1, alpha=0.7)
-            ax.set_xlabel("Lag")
-            ax.set_ylabel("ACF")
-            ax.set_title("ACF de Residuos", fontsize=10, fontweight="bold")
-            ax.grid(True, alpha=0.3)
-            ax.set_facecolor("#2d2d2d")
-            fig.patch.set_facecolor("#1a1a1a")
-            ax.tick_params(colors="white")
-            ax.xaxis.label.set_color("white")
-            ax.yaxis.label.set_color("white")
-            ax.title.set_color("white")
-            ax.spines["bottom"].set_color("white")
-            ax.spines["left"].set_color("white")
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            plt.tight_layout()
-            return fig
+            return plot_residual_acf_plotly(np.asarray(residuals, dtype=float))
         except Exception as e:
-            fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, f"Error al calcular ACF:\n{str(e)}", ha="center", va="center", color="white", fontsize=9)
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.axis("off")
-            ax.set_facecolor("#2d2d2d")
-            fig.patch.set_facecolor("#1a1a1a")
-            return fig
+            return _plotly_empty_fig(f"Error ACF: {e}")
 
-    @render.plot
+    @render_plotly
     def eval_residual_hist_qq_plot():
         state = app_state.get()
         if not state.get("analysis_complete"):
-            fig, ax = plt.subplots(figsize=(6, 2))
-            ax.text(0.5, 0.5, "Ejecuta el análisis primero", ha="center", va="center", color="white")
-            ax.axis("off")
-            return fig
+            return _plotly_empty_fig("Ejecuta el análisis primero")
         fitted_model = state.get("fitted_model")
         if not fitted_model or not hasattr(fitted_model, "get_residuals"):
-            fig, ax = plt.subplots(figsize=(6, 2))
-            ax.text(0.5, 0.5, "Sin residuos", ha="center", va="center", color="white")
-            ax.axis("off")
-            return fig
+            return _plotly_empty_fig("Sin residuos")
         r = fitted_model.get_residuals()
-        return plot_residual_histogram_and_qq(np.asarray(r, dtype=float))
+        return plot_residual_hist_qq_plotly(np.asarray(r, dtype=float))
 
-    @render.plot
+    @render_plotly
     def eval_standardized_residuals_plot():
         state = app_state.get()
         if not state.get("analysis_complete"):
-            fig, ax = plt.subplots(figsize=(6, 2))
-            ax.text(0.5, 0.5, "Ejecuta el análisis primero", ha="center", va="center", color="white")
-            ax.axis("off")
-            return fig
+            return _plotly_empty_fig("Ejecuta el análisis primero")
         fitted_model = state.get("fitted_model")
         if not fitted_model or not hasattr(fitted_model, "get_residuals"):
-            fig, ax = plt.subplots(figsize=(6, 2))
-            ax.text(0.5, 0.5, "Sin residuos", ha="center", va="center", color="white")
-            ax.axis("off")
-            return fig
+            return _plotly_empty_fig("Sin residuos")
         r = np.asarray(fitted_model.get_residuals(), dtype=float)
-        return plot_standardized_residuals(r)
+        return plot_standardized_residuals_plotly(r)
 
     @render.ui
     def linear_model_title():
         """Show linear model title (statsmodels for ARIMA, TSLib for AR/MA/ARMA)."""
         mt = app_state.get().get("model_type")
-        label = "Modelo lineal (statsmodels)" if mt == "ARIMA" else "Modelo lineal (TSLib)"
+        label = "Modelo lineal" if mt == "ARIMA" else "Modelo lineal (TSLib)"
         return ui.tags.h4(label, class_="mb-3")
     
     @render.ui
@@ -1631,16 +1649,16 @@ def server(input, output, session):
                 ui.output_ui("parallel_model_info_ui"),
                 class_="mb-4"
             ),
-            # Parallel metrics
+            # Forecast distance metrics (L vs P); AIC/BIC/orden están en «Métricas de evaluación»
             ui.div(
-                ui.tags.h5("Métricas de evaluación (paralelo):"),
+                ui.tags.h5("Comparación de pronósticos (lineal vs paralelo):"),
                 ui.output_ui("parallel_metrics_cards"),
                 class_="mb-4"
             ),
             ui.div(
                 ui.tags.h5("Pronóstico paralelo (Spark)"),
                 ui.tags.p(
-                    "Con ARIMA y ambas rutas, el gráfico coincide con «Pronóstico» arriba (rosa = statsmodels, verde = workflow Spark).",
+                    "Con ARIMA y ambas rutas, el gráfico coincide con «Pronóstico» arriba (verde = lineal, rosa = paralelo).",
                     class_="text-muted small mb-2",
                 ),
                 output_widget("parallel_forecast_plot", height="420px"),
@@ -1668,30 +1686,21 @@ def server(input, output, session):
         order = metrics.get('order', 'N/A')
         backend = metrics.get("backend", "N/A")
         backend_desc = "Spark distribuido." if backend == "spark" else "N/A"
-        em = state.get("execution_metadata") or {}
-        t_lin = em.get("time_linear_fit_s")
-        t_par = em.get("time_parallel_fit_s")
-
         lines = [
             ui.tags.p(f"Tipo de modelo: {model_type} (paralelo)"),
             ui.tags.p(f"Orden: {order}"),
             ui.tags.p(f"Backend: {backend} — {backend_desc}"),
+            ui.tags.p(
+                "Tiempos detallados (lineal, paralelo, warm-up Spark, distribución DF): gráfico de barras arriba.",
+                class_="small",
+            ),
         ]
-        if t_lin is not None:
-            _lbl = "statsmodels" if model_type == "ARIMA" else "TSLib"
-            lines.append(ui.tags.p(f"Tiempo ajuste lineal ({_lbl}): {float(t_lin):.3f} s"))
-        if t_par is not None:
-            lines.append(ui.tags.p(f"Tiempo ajuste paralelo (Spark, workflow): {float(t_par):.3f} s"))
-        if t_lin is not None and t_par is not None:
-            dtp = 100.0 * (float(t_par) - float(t_lin)) / max(float(t_lin), 1e-12)
-            _ref = "statsmodels lineal" if model_type == "ARIMA" else "TSLib lineal"
-            lines.append(ui.tags.p(f"Δ tiempo Spark vs {_ref}: {dtp:+.2f} %"))
 
         return ui.div(*lines, class_="text-muted")
     
     @render.ui
     def parallel_metrics_cards():
-        """Render parallel model metrics cards"""
+        """ARIMA: solo distancias entre pronósticos L vs P (AIC/BIC/orden van en métricas principales)."""
         state = app_state.get()
         parallel_workflow = state.get("parallel_workflow")
         model_type = state.get("model_type", "N/A")
@@ -1701,49 +1710,95 @@ def server(input, output, session):
         
         metrics = tslib_service.get_parallel_model_metrics(parallel_workflow, model_type=model_type)
         em = state.get("execution_metadata") or {}
-        comparison = em.get("forecast_comparison", {})
+        comparison = em.get("forecast_comparison") or {}
 
         cards = []
 
-        if metrics.get('order'):
-            cards.append(create_metric_card(
-                metrics.get('order', 'N/A'),
-                "Orden (paralelo)",
-                "⚙️"
-            ))
+        if model_type == "ARIMA":
+            if comparison:
+                cards.append(
+                    create_metric_card(
+                        f"{comparison.get('mae_diff', 0):.4f}",
+                        "MAE |L−P|",
+                        "↔️",
+                    )
+                )
+                cards.append(
+                    create_metric_card(
+                        f"{comparison.get('rmse_diff', 0):.4f}",
+                        "RMSE (L vs P)",
+                        "↔️",
+                    )
+                )
+                if comparison.get("mape_diff") is not None:
+                    cards.append(
+                        create_metric_card(
+                            f"{comparison.get('mape_diff', 0):.2f}",
+                            "MAPE* dif.",
+                            "↔️",
+                        )
+                    )
+            if not cards:
+                return ui.div(
+                    ui.tags.p(
+                        "No hay métricas de comparación hasta que existan ambos pronósticos.",
+                        class_="text-muted",
+                    )
+                )
+            return ui.div(*cards, class_="metrics-grid")
+
+        if metrics.get("order"):
+            cards.append(
+                create_metric_card(
+                    metrics.get("order", "N/A"),
+                    "Orden",
+                    "⚙️",
+                )
+            )
         if metrics.get("aic") is not None:
-            cards.append(create_metric_card(
-                f"{float(metrics['aic']):.2f}",
-                "AIC (paralelo)",
-                "📊",
-            ))
+            cards.append(
+                create_metric_card(
+                    f"{float(metrics['aic']):.2f}",
+                    "AIC",
+                    "📊",
+                )
+            )
         if metrics.get("bic") is not None:
-            cards.append(create_metric_card(
-                f"{float(metrics['bic']):.2f}",
-                "BIC (paralelo)",
-                "📊",
-            ))
-        if comparison:
-            cards.append(create_metric_card(
-                f"{comparison.get('mae_diff', 0):.4f}",
-                "MAE |L−P|",
-                "↔️",
-            ))
-            cards.append(create_metric_card(
-                f"{comparison.get('rmse_diff', 0):.4f}",
-                "RMSE (L vs P)",
-                "↔️",
-            ))
-            if comparison.get("mape_diff") is not None:
-                cards.append(create_metric_card(
-                    f"{comparison.get('mape_diff', 0):.2f}",
-                    "MAPE* dif.",
-                    "↔️",
-                ))
-        
+            cards.append(
+                create_metric_card(
+                    f"{float(metrics['bic']):.2f}",
+                    "BIC",
+                    "📊",
+                )
+            )
+        if metrics.get("mae") is not None:
+            cards.append(
+                create_metric_card(
+                    f"{float(metrics['mae']):.4f}",
+                    "MAE",
+                    "📊",
+                )
+            )
+        if metrics.get("rmse") is not None:
+            cards.append(
+                create_metric_card(
+                    f"{float(metrics['rmse']):.4f}",
+                    "RMSE",
+                    "📊",
+                )
+            )
+        if metrics.get("mape") is not None:
+            cards.append(
+                create_metric_card(
+                    f"{float(metrics['mape']):.2f}",
+                    "MAPE",
+                    "📊",
+                )
+            )
+
         if not cards:
             return ui.div(ui.tags.p("No hay métricas disponibles", class_="text-muted"))
-        
+
         return ui.div(*cards, class_="metrics-grid")
     
     @render_plotly
@@ -2321,6 +2376,9 @@ def server(input, output, session):
             linear_fc = forecast_results.get("forecast", []) if forecast_results else []
             parallel_fc = parallel_forecast_results.get("forecast", []) if parallel_forecast_results else []
             forecast_comparison = tslib_service.compare_forecasts(linear_fc, parallel_fc)
+            spark_timing_meta: Dict[str, Any] = {}
+            if parallel_workflow is not None:
+                spark_timing_meta = tslib_service.get_workflow_spark_timing(parallel_workflow)
             new_state["execution_metadata"] = {
                 "effective_order": effective_order,
                 "parallel_backend": getattr(parallel_workflow, "backend_", None) if parallel_workflow else None,
@@ -2329,6 +2387,7 @@ def server(input, output, session):
                 "time_linear_fit_s": time_linear_fit_s,
                 "time_parallel_fit_s": time_parallel_fit_s,
                 "time_statsmodels_fit_s": time_statsmodels_fit_s,
+                "spark_timing": spark_timing_meta,
             }
             new_state["analysis_complete"] = True
             for msg in runtime_msgs:
