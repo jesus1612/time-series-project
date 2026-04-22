@@ -205,16 +205,23 @@ def _require_complete_numeric_series(data: np.ndarray) -> np.ndarray:
 PARALLEL_ARIMA_AVAILABLE = False
 PARALLEL_AR_AVAILABLE = False
 PARALLEL_MA_AVAILABLE = False
+PARALLEL_ARMA_AVAILABLE = False
 SPARK_GENERIC_AVAILABLE = False
 SPARK_CHECKED = False
 SPARK_AVAILABLE = False
 ParallelARIMAWorkflow = None
 ParallelARWorkflow = None
 ParallelMAWorkflow = None
+ParallelARMAWorkflow = None
 GenericParallelProcessor = None
 
 try:
-    from tslib.spark import ParallelARIMAWorkflow, ParallelARWorkflow, ParallelMAWorkflow
+    from tslib.spark import (
+        ParallelARIMAWorkflow,
+        ParallelARWorkflow,
+        ParallelMAWorkflow,
+        ParallelARMAWorkflow,
+    )
     from tslib.spark.parallel_processor import GenericParallelProcessor
     from tslib.utils.checks import check_spark_availability
     
@@ -222,12 +229,13 @@ try:
     PARALLEL_ARIMA_AVAILABLE = SPARK_AVAILABLE
     PARALLEL_AR_AVAILABLE = SPARK_AVAILABLE
     PARALLEL_MA_AVAILABLE = SPARK_AVAILABLE
+    PARALLEL_ARMA_AVAILABLE = SPARK_AVAILABLE
     SPARK_GENERIC_AVAILABLE = SPARK_AVAILABLE
     SPARK_CHECKED = True
     
     if PARALLEL_ARIMA_AVAILABLE:
         logger.info(
-            "ParallelARIMAWorkflow / ParallelARWorkflow / ParallelMAWorkflow imported and Spark is available"
+            "ParallelARIMAWorkflow / ParallelARWorkflow / ParallelMAWorkflow / ParallelARMAWorkflow imported and Spark is available"
         )
     else:
         logger.warning("Parallel workflows imported but Spark is not available")
@@ -235,16 +243,18 @@ try:
 except ImportError as e:
     logger.warning(f"Parallel Spark workflows not available: {str(e)}")
     logger.warning(
-        "Parallel ARIMA/AR/MA models will not be available. Make sure Spark is configured."
+        "Parallel ARIMA/AR/MA/ARMA models will not be available. Make sure Spark is configured."
     )
     PARALLEL_ARIMA_AVAILABLE = False
     PARALLEL_AR_AVAILABLE = False
     PARALLEL_MA_AVAILABLE = False
+    PARALLEL_ARMA_AVAILABLE = False
 except Exception as e:
     logger.warning(f"Error checking Spark availability: {str(e)}")
     PARALLEL_ARIMA_AVAILABLE = False
     PARALLEL_AR_AVAILABLE = False
     PARALLEL_MA_AVAILABLE = False
+    PARALLEL_ARMA_AVAILABLE = False
 
 
 class TSLibService:
@@ -414,6 +424,50 @@ class TSLibService:
                 ex,
             )
             return self.fit_statsmodels_arima(y, (0, 0, q), inverse_forecast_fn=inv)
+
+    def fit_statsmodels_arma_aligned_to_parallel_arma_workflow(
+        self, workflow: Any
+    ) -> StatsmodelsFittedARIMA:
+        """
+        statsmodels ARIMA(p,0,q) on ``working_data_`` aligned with ``ParallelARMAWorkflow``.
+        """
+        from statsmodels.tsa.arima.model import ARIMA
+
+        wd = getattr(workflow, "working_data_", None)
+        order = getattr(workflow, "order_", None)
+        if wd is None or order is None or len(order) != 2:
+            raise ValueError(
+                "Parallel ARMA workflow must be fitted with working_data_ and order_=(p, q)."
+            )
+        inv: Optional[Callable[[Union[np.ndarray, List[float]]], np.ndarray]] = None
+        lt = getattr(workflow, "_log_transformer", None)
+        if lt is not None and hasattr(lt, "inverse_transform"):
+            inv = lt.inverse_transform
+
+        y = np.asarray(wd, dtype=float).ravel()
+        y = _require_complete_numeric_series(y)
+        p, q = int(order[0]), int(order[1])
+        trend = _statsmodels_arima_trend((p, 0, q))
+        mod = ARIMA(y, order=(p, 0, q), trend=trend)
+        try:
+            sp = _statsmodels_start_params_from_workflow(mod, workflow)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = mod.fit(
+                    start_params=sp,
+                    maxiter=0,
+                    method="statespace",
+                    disp=False,
+                )
+            return StatsmodelsFittedARIMA(
+                (p, 0, q), y, res, inverse_forecast_fn=inv
+            )
+        except Exception as ex:
+            logger.warning(
+                "statsmodels maxiter=0 (ARMA aligned) failed (%s); refitting MLE on working_data_",
+                ex,
+            )
+            return self.fit_statsmodels_arima(y, (p, 0, q), inverse_forecast_fn=inv)
 
     def get_workflow_spark_timing(self, workflow: Any) -> Dict[str, float]:
         """Return Spark timing dict from a fitted parallel workflow (warmup, distribute, ...)."""
@@ -992,6 +1046,32 @@ class TSLibService:
         setattr(workflow, "backend_", "spark")
         return workflow
 
+    def fit_parallel_arma(
+        self,
+        data: np.ndarray,
+        verbose: bool = True,
+        validation_report: Optional[Dict[str, Any]] = None,
+        grid_mode: str = "auto_n",
+        manual_max_p: Optional[int] = None,
+        manual_max_q: Optional[int] = None,
+    ) -> Any:
+        """
+        Fit classic ARMA(p,q) via Spark ``ParallelARMAWorkflow`` (same staged methodology as ARIMA, d=0).
+        """
+        if not PARALLEL_ARMA_AVAILABLE or ParallelARMAWorkflow is None:
+            raise RuntimeError(
+                "Ruta paralela ARMA no disponible: Spark no está configurado o no está activo."
+            )
+        data_clean = _require_complete_numeric_series(data)
+        wf_kw: Dict[str, Any] = {"verbose": verbose, "grid_mode": grid_mode}
+        if grid_mode == "manual":
+            wf_kw["manual_max_p"] = manual_max_p
+            wf_kw["manual_max_q"] = manual_max_q
+        workflow = ParallelARMAWorkflow(**wf_kw)
+        workflow.fit(data_clean)
+        setattr(workflow, "backend_", "spark")
+        return workflow
+
     def fit_parallel_model_spark(
         self,
         data: np.ndarray,
@@ -1002,7 +1082,7 @@ class TSLibService:
     ) -> Tuple[Any, Dict[str, Any]]:
         """
         Fit/forecast via Spark: ARIMA uses ``ParallelARIMAWorkflow``; AR uses ``ParallelARWorkflow``;
-        MA uses ``ParallelMAWorkflow``; ARMA uses ``GenericParallelProcessor``.
+        MA uses ``ParallelMAWorkflow``; ARMA uses ``ParallelARMAWorkflow``.
 
         Series must be complete (no NaN). Returns a workflow-like object plus forecast dict.
         """
@@ -1032,6 +1112,15 @@ class TSLibService:
 
         if model_type == "MA":
             workflow = self.fit_parallel_ma(
+                data=data_clean,
+                verbose=False,
+                validation_report=validation_report,
+            )
+            forecast = self.get_parallel_arima_forecast(workflow, steps=steps, return_conf_int=True)
+            return workflow, forecast
+
+        if model_type == "ARMA":
+            workflow = self.fit_parallel_arma(
                 data=data_clean,
                 verbose=False,
                 validation_report=validation_report,
@@ -1197,6 +1286,34 @@ class TSLibService:
             logger.exception("Error extracting parallel MA metrics: %s", e)
             return {"order": "MA(1)", "backend": "spark"}
 
+    def get_parallel_arma_metrics(self, workflow: Any) -> Dict[str, Any]:
+        """Metrics from ``ParallelARMAWorkflow`` (stationary ARMA, not full ARIMA)."""
+        try:
+            metrics: Dict[str, Any] = {"backend": getattr(workflow, "backend_", "spark")}
+            if hasattr(workflow, "order_") and workflow.order_ is not None:
+                po = workflow.order_
+                if isinstance(po, tuple) and len(po) == 2:
+                    metrics["order"] = f"ARMA({po[0]},{po[1]})"
+                else:
+                    metrics["order"] = str(po)
+            pp = getattr(workflow, "parameters_", None) or {}
+            if isinstance(pp, dict):
+                if pp.get("aic") is not None:
+                    metrics["aic"] = float(pp["aic"])
+                if pp.get("bic") is not None:
+                    metrics["bic"] = float(pp["bic"])
+                metrics["parameters"] = pp
+            if hasattr(workflow, "differencing_order_"):
+                metrics["preprocessing_d"] = int(workflow.differencing_order_)
+            if hasattr(workflow, "results_") and isinstance(workflow.results_, dict):
+                cfg = workflow.results_.get("config")
+                if isinstance(cfg, dict) and "max_p" in cfg and "max_q" in cfg:
+                    metrics["max_p_q"] = f"max_p={cfg['max_p']}, max_q={cfg['max_q']}"
+            return metrics
+        except Exception as e:
+            logger.exception("Error extracting parallel ARMA metrics: %s", e)
+            return {"order": "ARMA(1,1)", "backend": "spark"}
+
     def get_parallel_arima_metrics(self, workflow: Any) -> Dict[str, Any]:
         """Extract metrics from parallel ARIMA workflow (real or fallback)."""
         try:
@@ -1243,6 +1360,8 @@ class TSLibService:
             return self.get_parallel_ar_metrics(workflow)
         if model_type == "MA":
             return self.get_parallel_ma_metrics(workflow)
+        if model_type == "ARMA":
+            return self.get_parallel_arma_metrics(workflow)
 
         metrics = {
             "order": f"{model_type}{workflow.order_}" if hasattr(workflow, "order_") else f"{model_type}(N/A)",
