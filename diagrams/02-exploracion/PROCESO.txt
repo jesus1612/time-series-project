@@ -8,19 +8,18 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
   – Con validación exitosa la columna de valores queda **completa** para el flujo del asistente (lista para ACF/PACF y estadísticas).
 
 • Flujo operativo
-  – Usuario pulsa “Validar Datos”.
-  – App ejecuta validate_data sobre la columna de valores.
-  – Si la validación es válida, ejecuta get_exploratory_analysis para ACF/PACF y métricas.
+  – En el paso de carga, al elegir columnas de fecha y valores, la app ejecuta `validate_data` y, si es válida, `get_exploratory_analysis` automáticamente.
+  – El usuario avanza con **Siguiente** cuando `data_validated` es verdadero.
   – Se guardan `validation_report` y `exploratory_analysis` en estado reactivo.
-  – La UI renderiza resultados, gráficos y notas explicativas.
+  – La UI de exploración renderiza gráficos y notas a partir de ese estado.
 
 • Reglas técnicas relevantes
-  – Si la validación no pasa, se bloquea avance de paso.
+  – Si la validación no pasa, no se puede avanzar de paso.
   – La app exige columna de valores sin NaN para avanzar; la serie lista se explora tal cual.
   – ACF/PACF requiere longitud mínima interna; con pocos datos se muestra “no disponible”.
 
 • Salidas del paso
-  – Validación: mensajes de `issues`, tabla de calidad si aplica, `quality_report` completo en estado, avisos del motor si los hubo.
+  – Validación: mensajes de `issues`, `quality_report` completo en estado (diagnósticos heurísticos), avisos del motor si los hubo.
   – Visualización: serie temporal y estadísticas básicas.
   – Correlación: ACF/PACF truncadas a un número manejable de lags.
   – Notas de exploración: texto breve que remite a **serie, ACF/PACF y estadísticas** como lectura principal de la estructura.

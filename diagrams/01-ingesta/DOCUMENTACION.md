@@ -19,7 +19,6 @@ flowchart TB
     LIM["Comprobar tamaño máx. 500 MB"]
     C[Columna de valores obligatoria]
     D[Columna de fecha opcional]
-    E[Acción validar datos]
   end
 
   subgraph LECTURA["App Shiny — lectura sin TSLib"]
@@ -52,8 +51,7 @@ flowchart TB
   SUG --> D
   C --> H["Extraer serie numérica de la columna elegida"]
   D --> H
-  H --> E
-  E --> I
+  H --> I
   I --> J
   J --> Z
   Z -->|vector completo| L
@@ -101,9 +99,9 @@ flowchart TD
 
 ---
 
-## Qué muestra la pantalla al validar
+## Qué muestra la pantalla (validación automática)
 
-Tras pulsar **Validar datos**, la interfaz **muestra** los **mensajes de reglas duras** traducidos desde `issues` del `DataValidator` (y el mensaje explícito de la app si aún hubiera NaN). Si las librerías emiten avisos durante la validación o el análisis exploratorio, aparecen bajo **Avisos del motor (Python / librerías)** (`validation_report.runtime_warnings`). En paralelo, **`quality_report`** guarda el informe completo del validador (diagnósticos de tendencia, outliers, recomendaciones) para **usos internos** — por ejemplo, decidir el bloqueo de AR/MA/ARMA ante señal de tendencia. La **salida visible** en este paso se apoya en **`issues`** y **`runtime_warnings`**; el resto del informe viaja en estado para el resto de la app.
+Al elegir **columna de valores** y **columna de fecha** (o «Ninguna») en el paso de carga, la app ejecuta **`validate_data`** en segundo plano. La interfaz **muestra** los **mensajes de reglas duras** traducidos desde `issues` del `DataValidator` (y el mensaje explícito de la app si aún hubiera NaN). Si las librerías emiten avisos durante la validación o el análisis exploratorio, aparecen bajo **Avisos del motor (Python / librerías)** (`validation_report.runtime_warnings`). **`quality_report`** conserva el dict completo del validador (`warnings`, `diagnostics` como tendencia/estacionalidad heurística, etc.) para **contexto exploratorio** y pasos posteriores; **no** se usa para bloquear el tipo de modelo que el usuario elija. La **salida visible** en este paso se apoya en **`issues`** y **`runtime_warnings`**.
 
 ---
 

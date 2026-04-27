@@ -24,9 +24,8 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
   – Registro en `execution_log` (incluye avisos del motor como líneas ⚠ Aviso) y `runtime_warnings` en estado.
   – Resumen en UI: panel "Registro de la corrida" en esta pantalla; detalle ampliado en Paso 4 (Resultados).
 
-• Regla de estacionariedad en ejecución
-  – Para AR, MA y ARMA, si validación detecta señal de tendencia se bloquea la ejecución en UI.
-  – Mensaje guía: usar diferenciación o cambiar a ARIMA antes de ajustar modelos estacionarios.
+• Elección de modelo y avisos
+  – El usuario puede ejecutar AR, MA, ARMA o ARIMA sin bloqueo por heurísticas de tendencia del validador; TSLib o statsmodels pueden emitir avisos (p. ej. no estacionariedad) que se registran en el log y en **Avisos del motor**.
 
 • Estado del paralelismo por modelo en UI
   – AR, MA, ARMA y ARIMA: ruta paralela Spark habilitada.

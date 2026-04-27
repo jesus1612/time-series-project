@@ -1,6 +1,6 @@
 # Documentación: Exploración de datos
 
-Este paso **toma la serie ya validada** en carga, calcula estadísticas básicas y genera señales exploratorias (ACF/PACF y diagnósticos del validador en `quality_report`) antes del modelado.
+Este paso **toma la serie ya validada** en carga (validación automática al fijar columnas), calcula estadísticas básicas y genera señales exploratorias (ACF/PACF y diagnósticos heurísticos del validador en `quality_report`) antes del modelado.
 
 En el flujo del asistente la columna de valores llega **completa** para continuar; el `DataValidator` sigue registrando longitud, infinitos y métricas de calidad. La app **modela sobre la serie tal cual** llega tras la validación (sin rellenar huecos en este paso).
 
@@ -13,8 +13,8 @@ Importar en [diagrams.net](https://app.diagrams.net/): **Insertar → Avanzado �
 ```mermaid
 flowchart TB
   subgraph UI["Paso 2 — Exploración"]
-    A[Usuario pulsa Validar Datos]
-    B[Mostrar estado de validación, tabla de calidad si aplica, avisos del motor si hay]
+    A[Usuario llega con Siguiente desde carga]
+    B[Mostrar estado de validación, avisos del motor si hay]
     C[Mostrar serie temporal]
     D[Mostrar estadísticas básicas]
     E[Mostrar ACF y PACF]
@@ -22,7 +22,7 @@ flowchart TB
   end
 
   subgraph APP["App Shiny"]
-    G[handle_validate_data]
+    G[auto_validate_on_column_inputs / _run_auto_validate_and_maybe_advance (paso 0)]
     H[TSLibService.validate_data]
     I[TSLibService.get_exploratory_analysis]
     J[Actualizar app_state: validation_report y exploratory_analysis]
@@ -33,18 +33,17 @@ flowchart TB
     L[ACFCalculator / PACFCalculator]
   end
 
-  A --> G
   G --> H
   H --> K
-  G --> I
+  H --> I
   I --> L
-  H --> J
   I --> J
   J --> B
   J --> C
   J --> D
   J --> E
   J --> F
+  A --> B
 
   style TSLIB fill:#1a1a2e,color:#eee
   style APP fill:#16213e,color:#eee
@@ -70,7 +69,7 @@ flowchart TD
 
 ## Qué se muestra en pantalla
 
-- **Estado de validación**: mensajes de reglas duras en español; avisos del motor si las librerías los emiten; tabla de calidad cuando hay métricas.
+- **Estado de validación**: mensajes de reglas duras en español; avisos del motor si las librerías los emiten.
 - **Serie temporal**: gráfica principal para inspección visual.
 - **Estadísticas**: media, desviación, mínimo y máximo.
 - **ACF/PACF**: evidencia de dependencia temporal por rezagos.
@@ -82,4 +81,4 @@ flowchart TD
 
 - Añadir selector avanzado para **max_lag** en ACF/PACF.
 - Separar en UI los avisos de tipo: dato vs modelo para mejorar trazabilidad.
-- Complementar la tabla de calidad con umbrales de interpretación por métrica.
+- Mostrar de forma opcional resúmenes de diagnósticos (`quality_report.diagnostics`) sin presentarlos como tabla de «puntuación» única.

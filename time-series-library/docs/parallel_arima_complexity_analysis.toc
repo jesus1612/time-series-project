@@ -1,0 +1,24 @@
+\babel@toc {spanish}{}\relax 
+\contentsline {section}{\numberline {1}Notación y variables (alineación con el código)}{2}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Tamaño de la rejilla de órdenes}{2}{subsection.1.1}%
+\contentsline {section}{\numberline {2}Implementación en código (TSLib)}{2}{section.2}%
+\contentsline {section}{\numberline {3}Modelo de coste de un único ajuste MLE}{2}{section.3}%
+\contentsline {section}{\numberline {4}Desglose por pasos del \texttt {ParallelARIMAWorkflow}}{3}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Tiempo de pared agregado (modelo simplificado)}{4}{subsection.4.1}%
+\contentsline {section}{\numberline {5}Baseline lineal (statsmodels)}{4}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Un solo modelo en la serie completa}{4}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Búsqueda en rejilla secuencial (comparable al espacio de órdenes)}{4}{subsection.5.2}%
+\contentsline {section}{\numberline {6}Desigualdades de break-even}{4}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Frente a un único ajuste lineal}{4}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Frente a búsqueda en rejilla secuencial en $n$}{5}{subsection.6.2}%
+\contentsline {section}{\numberline {7}Estimación con umbral numérico: cuándo gana el paralelo}{5}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Modelo de tiempos medidos}{5}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Umbral en tiempo de un fit completo}{6}{subsection.7.2}%
+\contentsline {paragraph}{Ejemplo con cifras fijas.}{6}{section*.2}%
+\contentsline {subsection}{\numberline {7.3}Umbral en longitud de serie $n^{*}$ (modelo potencia)}{6}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Frente a un solo fit lineal}{6}{subsection.7.4}%
+\contentsline {section}{\numberline {8}Calibración medida y regeneración automática}{7}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Comando para volver a medir y actualizar el PDF}{7}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Resultados insertados en este documento}{7}{subsection.8.2}%
+\contentsline {section}{\numberline {9}Ejemplo numérico aplicado}{7}{section.9}%
+\contentsline {section}{\numberline {10}Conclusión}{8}{section.10}%

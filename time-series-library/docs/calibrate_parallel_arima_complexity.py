@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""
+Measure local timings for parallel_arima_complexity_analysis.tex.
+
+Writes parallel_arima_complexity_calibration.tex (LaTeX macros + table rows).
+Run from repo root or from this directory:
+
+  cd time-series-library/docs && python calibrate_parallel_arima_complexity.py
+
+Comments in English (project convention).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import math
+import os
+import statistics
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+# tslib import: repo root = parent of docs/
+_DOCS = Path(__file__).resolve().parent
+_ROOT = _DOCS.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tslib.core.arima import ARIMAProcess  # noqa: E402
+
+
+def _median_secs(samples: list[float]) -> float:
+    return float(statistics.median(samples)) if samples else float("nan")
+
+
+def _fit_secs(data: np.ndarray, p: int, d: int, q: int, repeats: int) -> float:
+    times: list[float] = []
+    for i in range(repeats):
+        rng = np.random.default_rng(42 + i)
+        y = np.asarray(data, dtype=float).copy()
+        y += 1e-6 * rng.standard_normal(len(y))
+        t0 = time.perf_counter()
+        model = ARIMAProcess(ar_order=p, diff_order=d, ma_order=q, trend="c", n_jobs=1)
+        model.fit(y)
+        times.append(time.perf_counter() - t0)
+    return _median_secs(times)
+
+
+def _measure_spark_alpha() -> tuple[float, str]:
+    """First-touch Spark local[1] latency (proxy for workflow warmup + tiny job)."""
+    try:
+        from pyspark.sql import SparkSession  # type: ignore
+    except ImportError:
+        return 0.0, "PySpark not installed; alpha set to 0 (add JVM+PySpark for realistic alpha)"
+
+    spark = None
+    try:
+        t0 = time.perf_counter()
+        spark = (
+            SparkSession.builder.master("local[1]")
+            .appName("TSLib-CalibrateParallelARIMAComplexity")
+            .getOrCreate()
+        )
+        spark.sparkContext.setLogLevel("ERROR")
+        spark.range(1).count()
+        dt = time.perf_counter() - t0
+        return float(dt), "PySpark local[1] session + single count()"
+    except Exception as exc:  # noqa: BLE001
+        return 0.0, f"Spark unavailable ({type(exc).__name__}); alpha set to 0"
+    finally:
+        if spark is not None:
+            try:
+                spark.stop()
+            except Exception:
+                pass
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n-cal", type=int, default=2000, help="Pilot series length for tau_full")
+    parser.add_argument("--ws", type=int, default=8, help="Sliding windows (matches doc example)")
+    parser.add_argument("--c-grid", type=int, default=35, help="Grid size C")
+    parser.add_argument("--p-par", type=int, default=8, help="Parallelism P")
+    parser.add_argument("--k-top", type=int, default=15, help="Reconcile top-K")
+    parser.add_argument("--p-order", type=int, default=2, help="ARIMA p for micro-benchmark")
+    parser.add_argument("--d-order", type=int, default=0, help="ARIMA d for micro-benchmark")
+    parser.add_argument("--q-order", type=int, default=2, help="ARIMA q for micro-benchmark")
+    parser.add_argument("--repeats", type=int, default=12, help="Repeated fits per timing")
+    args = parser.parse_args()
+
+    n_cal = max(200, args.n_cal)
+    ws = max(1, args.ws)
+    c_grid = args.c_grid
+    p_par = max(1, args.p_par)
+    k_top = args.k_top
+    p_o, d_o, q_o = args.p_order, args.d_order, args.q_order
+
+    l_win = max(p_o + q_o + d_o + 5, n_cal // ws)
+    rng = np.random.default_rng(2026)
+    full_series = np.cumsum(rng.standard_normal(n_cal)).astype(float)
+    window_series = full_series[:l_win].copy()
+
+    # Warmup (JIT / caches)
+    _fit_secs(full_series[: min(500, n_cal)], p_o, d_o, q_o, repeats=2)
+
+    tau_full = _fit_secs(full_series, p_o, d_o, q_o, repeats=args.repeats)
+    tau_task = _fit_secs(window_series, p_o, d_o, q_o, repeats=args.repeats)
+    alpha, alpha_note = _measure_spark_alpha()
+
+    c_per_obs = tau_full / n_cal if n_cal > 0 else float("nan")
+    denom_star = c_grid - k_top - 1.0 - (c_grid / p_par)
+    tau_star = (alpha + (ws * c_grid / p_par) * tau_task) / (c_grid - k_top - 1.0) if (c_grid - k_top - 1) > 0 else float("nan")
+    alpha_positive = alpha >= 1e-6
+    if alpha_positive and denom_star > 0 and c_per_obs > 0:
+        n_star = alpha / (c_per_obs * denom_star)
+    else:
+        n_star = float("nan")
+
+    t_par_est = alpha + (ws * c_grid / p_par) * tau_task + (k_top + 1.0) * tau_full
+    t_lin_est = c_grid * tau_full
+
+    out_path = _DOCS / "parallel_arima_complexity_calibration.tex"
+    gen_at = _dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+    def fmt(x: float, nd: int = 4) -> str:
+        if not math.isfinite(x):
+            return "nan"
+        return f"{x:.{nd}f}"
+
+    lines = [
+        "% AUTO-GENERATED by calibrate_parallel_arima_complexity.py — do not hand-edit.",
+        f"% {alpha_note}",
+        r"\newcommand{\CalibrationAlphaPositive}{" + ("1" if alpha_positive else "0") + "}",
+        r"\newcommand{\CalGenAt}{" + gen_at.replace("#", "\\#").replace("%", "\\%") + "}",
+        r"\newcommand{\CalNCal}{" + str(n_cal) + "}",
+        r"\newcommand{\CalLWin}{" + str(l_win) + "}",
+        r"\newcommand{\CalWs}{" + str(ws) + "}",
+        r"\newcommand{\CalCGrid}{" + str(c_grid) + "}",
+        r"\newcommand{\CalPPar}{" + str(p_par) + "}",
+        r"\newcommand{\CalKTop}{" + str(k_top) + "}",
+        r"\newcommand{\CalPDQ}{(" + f"{p_o},{d_o},{q_o}" + ")}",
+        r"\newcommand{\CalAlphaNum}{" + fmt(alpha, 4) + "}",
+        r"\newcommand{\CalTauTaskNum}{" + fmt(tau_task, 4) + "}",
+        r"\newcommand{\CalTauFullNum}{" + fmt(tau_full, 4) + "}",
+        r"\newcommand{\CalCPerObsNum}{" + fmt(c_per_obs, 6) + "}",
+        r"\newcommand{\CalTauStarNum}{" + fmt(tau_star, 4) + "}",
+        r"\newcommand{\CalNStarNum}{" + (fmt(n_star, 1) if alpha_positive else "0") + "}",
+        r"\newcommand{\CalTParEstNum}{" + fmt(t_par_est, 3) + "}",
+        r"\newcommand{\CalTLinEstNum}{" + fmt(t_lin_est, 3) + "}",
+        r"\newcommand{\CalAlphaNote}{" + alpha_note.replace("_", r"\_")[: 200] + "}",
+    ]
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {out_path}")
+    print(f"  alpha={fmt(alpha)}s  tau_task={fmt(tau_task)}s  tau_full={fmt(tau_full)}s")
+    print(f"  tau_star={fmt(tau_star)}s  n_star={fmt(n_star,1)}  T_par~{fmt(t_par_est)}s vs T_lin~{fmt(t_lin_est)}s")
+
+
+if __name__ == "__main__":
+    os.chdir(_ROOT)
+    main()

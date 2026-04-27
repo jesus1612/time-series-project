@@ -136,11 +136,11 @@ def create_data_table(data: list, headers: list = None) -> ui.Tag:
 
 def create_file_upload_area(
     input_id: str,
-    label: str = "Seleccionar archivo",
+    label: str = "",
     accept: str = ".csv,.xlsx,.xls",
     multiple: bool = False
 ) -> ui.Tag:
-    """Create a file upload area with hidden input and custom drag & drop area"""
+    """Native file input is visually hidden; only the custom drop zone is shown."""
     
     return ui.div(
         ui.div(
@@ -148,18 +148,26 @@ def create_file_upload_area(
                 input_id,
                 label,
                 accept=accept,
-                multiple=multiple
+                multiple=multiple,
+                button_label="",
+                placeholder="",
             ),
-            class_="file-input-hidden"
+            class_="file-input-hidden",
         ),
         ui.div(
+            ui.tags.h6("Seleccionar archivo", class_="file-upload-heading mb-2"),
             ui.div("📁", class_="file-upload-icon"),
             ui.div("Arrastra y suelta tu archivo aquí", class_="file-upload-text"),
             ui.div("o haz clic para seleccionar", class_="file-upload-hint"),
             class_="file-upload-area",
-            onclick=f"document.getElementById('{input_id}').click()"
+            onclick=(
+                f"const el = document.getElementById('{input_id}') "
+                f"|| document.querySelector('input#{input_id}') "
+                f"|| document.querySelector('.file-input-hidden input[type=file]'); "
+                f"if (el) el.click();"
+            ),
         ),
-        class_="file-upload-wrapper"
+        class_="file-upload-wrapper",
     )
 
 def create_action_buttons(

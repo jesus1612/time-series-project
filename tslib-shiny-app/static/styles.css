@@ -561,6 +561,29 @@ input[type="number"].shiny-bound-input:focus {
   color: var(--text-primary) !important;
 }
 
+/* Hide native Shiny file input (Browse / placeholder); custom drop zone opens the dialog */
+.file-input-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+}
+
+.file-upload-wrapper {
+  position: relative;
+}
+
+.file-upload-heading {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 /* File upload */
 .file-upload-area {
   border: 2px dashed var(--border-color);

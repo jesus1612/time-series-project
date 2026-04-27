@@ -154,6 +154,8 @@ spark-warehouse/
 metastore_db/
 derby.log
 
+# Local venv used only for docs/calibrate_parallel_arima_complexity.py
+.venv-doc-calib/
 
 
 

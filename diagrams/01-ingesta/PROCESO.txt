@@ -21,8 +21,8 @@ Diagramas: DOCUMENTACION.md en esta carpeta.
   – Little & Rubin (2019): no hay un % universal válido; el criterio de negocio y el mecanismo de ausencia importan.
 
 • Validación ↔ UI
-  – validate_data devuelve `valid`, `messages` (issues traducidos), `warnings` (vacío de avisos heurísticos), `quality_report` completo y, tras el handler, `runtime_warnings` de librerías.
-  – Con validación válida se calcula exploración (ACF/PACF).
+  – Al cambiar la selección de columnas (paso 0), la app llama `validate_data` automáticamente; devuelve `valid`, `messages` (issues traducidos), `warnings` (vacío en el servicio; heurísticas van en `quality_report` del validador), `quality_report` completo y `runtime_warnings` fusionados tras exploración si aplica.
+  – Con validación válida se calcula en el mismo ciclo la exploración (ACF/PACF). El botón **Siguiente** avanza cuando `data_validated` es verdadero; no hay acción separada «Validar datos» en la UI.
 
 • Datasets de prueba
   – Carpeta TT/sampler/ (CSV completos) para benchmarks y pruebas reproducibles.

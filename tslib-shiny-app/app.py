@@ -77,6 +77,25 @@ def _as_forecast_array(d: Optional[Dict[str, Any]], key: str = "forecast") -> np
     return np.asarray(v, dtype=float).ravel()
 
 
+def _normalize_model_type(raw: Any) -> Optional[str]:
+    """Map model_type input to a concrete model id or None (placeholder / unknown)."""
+    if raw is None or raw == "" or raw == "__none__":
+        return None
+    if raw in ("AR", "MA", "ARMA", "ARIMA"):
+        return raw
+    return None
+
+
+def _effective_model_type_display(raw: Any, stored_model: Any) -> Optional[str]:
+    """Resolve model for UI copy; prefer live input. If user picked placeholder, do not use stale state."""
+    mt = _normalize_model_type(raw)
+    if mt is not None:
+        return mt
+    if raw is None:
+        return _normalize_model_type(stored_model)
+    return None
+
+
 def _pct_abs_parallel_vs_linear(v_lineal: float, v_par: float) -> float:
     """Absolute relative deviation of parallel vs linear: 100 * |P - L| / |L|."""
     denom = max(abs(float(v_lineal)), 1e-12)
@@ -383,7 +402,11 @@ def server(input, output, session):
     def spark_status_header_ui():
         """Mini status badge for Spark availability in header."""
         state = app_state.get()
-        model_type = state.get("model_type")
+        try:
+            raw = input.model_type() if hasattr(input, "model_type") else None
+        except Exception:
+            raw = None
+        model_type = _effective_model_type_display(raw, state.get("model_type"))
         if model_type not in ["AR", "MA", "ARMA", "ARIMA"]:
             return ui.div()
         status = tslib_service.get_spark_parallel_status(model_type=model_type)
@@ -456,34 +479,12 @@ def server(input, output, session):
             auto_select_value = state.get("auto_select", True)
             return render_model_selection_ui(
                 auto_select_value=auto_select_value,
+                selected_model_type=state.get("model_type"),
             )
         elif current_step == 3:
             return render_results_ui()
         else:
             return ui.div("Paso no válido", class_="alert alert-danger")
-    
-    @render.ui
-    def model_type_select():
-        """Render model type select with state hydration."""
-        state = app_state.get()
-        current = state.get("model_type")
-        try:
-            current_input = input.model_type() if hasattr(input, 'model_type') else None
-        except Exception:
-            current_input = None
-        selected_value = current_input or current or "__none__"
-        return ui.input_select(
-            "model_type",
-            "",
-            choices={
-                "__none__": "— Selecciona un modelo —",
-                "AR": "AR - Autoregresivo",
-                "MA": "MA - Media Móvil",
-                "ARMA": "ARMA - Combinado",
-                "ARIMA": "ARIMA - Integrado"
-            },
-            selected=selected_value
-        )
     
     @render.ui
     def upload_area_ui():
@@ -495,7 +496,6 @@ def server(input, output, session):
         return ui.div(
             create_file_upload_area(
                 input_id="file_upload",
-                label="Seleccionar archivo",
                 accept=".csv,.xlsx,.xls"
             ),
             ui.div(
@@ -648,6 +648,12 @@ def server(input, output, session):
         
         return ui.div(
             ui.tags.h5("Configuración de columnas:", class_="mt-4"),
+            ui.tags.p(
+                "Al tener archivo cargado y ambas columnas elegidas (fecha puede ser «Ninguna»), "
+                "se valida la serie con TSLib al cambiar los selectores. Si es correcta, usa «Siguiente» "
+                "para ir a Exploración.",
+                class_="text-muted small",
+            ),
             ui.div(
                 ui.div(
                     create_form_group(
@@ -667,10 +673,6 @@ def server(input, output, session):
                 ),
                 class_="row"
             ),
-            ui.div(
-                ui.input_action_button("validate_data", "✓ Validar Datos", class_="btn btn-primary"),
-                class_="mt-3"
-            ),
             ui.output_ui("validation_results_ui"),
             class_="mt-3"
         )
@@ -688,19 +690,8 @@ def server(input, output, session):
         warnings = validation.get("warnings", [])
         runtime_warnings = validation.get("runtime_warnings", []) or []
         is_valid = validation.get("valid", False)
-        quality = (validation.get("quality_report", {}) or {}).get("quality_metrics", {}) or {}
 
         result_class = "status-success" if is_valid else "status-warning"
-        quality_rows = []
-        if quality:
-            completeness = float(quality.get("completeness", 0.0)) * 100
-            validity = float(quality.get("validity", 0.0)) * 100
-            consistency = float(quality.get("consistency", 0.0))
-            quality_rows = [
-                ["Completitud", f"{completeness:.2f}%"],
-                ["Validez", f"{validity:.2f}%"],
-                ["Consistencia", f"{consistency:.4f}"],
-            ]
 
         return ui.div(
             ui.div(
@@ -719,11 +710,6 @@ def server(input, output, session):
                 ),
                 class_="mt-3"
             ),
-            ui.div(
-                ui.tags.h6("Calidad de datos", class_="mt-3"),
-                create_data_table(quality_rows, headers=["Métrica", "Valor"]) if quality_rows else ui.div(),
-                class_="mt-2"
-            ) if quality_rows else ui.div(),
         )
     
     # Visualization renders
@@ -825,7 +811,14 @@ def server(input, output, session):
         
         if analysis is None:
             fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, 'Valida los datos primero', ha='center', va='center', color='white')
+            ax.text(
+                0.5,
+                0.5,
+                'Exploración no disponible\n(revisa el paso de carga)',
+                ha='center',
+                va='center',
+                color='white',
+            )
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
             ax.axis('off')
@@ -889,7 +882,14 @@ def server(input, output, session):
         
         if analysis is None:
             fig, ax = plt.subplots(figsize=(6, 3))
-            ax.text(0.5, 0.5, 'Valida los datos primero', ha='center', va='center', color='white')
+            ax.text(
+                0.5,
+                0.5,
+                'Exploración no disponible\n(revisa el paso de carga)',
+                ha='center',
+                va='center',
+                color='white',
+            )
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
             ax.axis('off')
@@ -958,7 +958,10 @@ def server(input, output, session):
         analysis = state.get("exploratory_analysis", {}) or {}
 
         if not validation and not analysis:
-            return ui.tags.p("Valida los datos para ver notas de exploración.", class_="text-muted")
+            return ui.tags.p(
+                "Tras elegir fecha y valores, el análisis exploratorio se genera solo si los datos son válidos.",
+                class_="text-muted",
+            )
 
         return ui.tags.p(
             "Usa la serie, estadísticas y ACF/PACF de esta pantalla para interpretar la estructura.",
@@ -969,47 +972,56 @@ def server(input, output, session):
     @render.ui
     def model_description():
         """Show model description based on selection"""
-        # Try to get from input first, then fallback to state
-        if hasattr(input, 'model_type'):
-            try:
-                model_type = input.model_type()
-                if not model_type:
-                    model_type = app_state.get().get("model_type", None)
-            except:
-                model_type = app_state.get().get("model_type", None)
-        else:
-            model_type = app_state.get().get("model_type", None)
-        
+        try:
+            raw = input.model_type() if hasattr(input, "model_type") else None
+        except Exception:
+            raw = None
+        model_type = _effective_model_type_display(raw, app_state.get().get("model_type"))
+
         descriptions = {
             "AR": "Modelo Autoregresivo: El valor actual depende de valores pasados. Útil para series con persistencia.",
             "MA": "Media Móvil: El valor actual depende de errores pasados. Útil para modelar shocks transitorios.",
             "ARMA": "Combinación AR + MA: Para series estacionarias con estructura compleja.",
             "ARIMA": "ARMA Integrado: Incluye diferenciación para series no estacionarias con tendencia."
         }
-        
+
+        if model_type is None:
+            text = "Selecciona primero un tipo de modelo para ver una descripción breve."
+        else:
+            text = descriptions.get(model_type, "")
+
         return ui.div(
-            ui.tags.p(descriptions.get(model_type, ""), class_="text-muted"),
-            class_="mt-2 model-description"
+            ui.tags.p(text, class_="text-muted"),
+            class_="mt-2 model-description",
         )
     
     @render.ui
     def manual_parameters_ui():
         """Show manual parameter inputs based on model type and auto_select"""
         auto_select = input.auto_select() if hasattr(input, 'auto_select') else True
-        
+
+        try:
+            raw = input.model_type() if hasattr(input, "model_type") else None
+        except Exception:
+            raw = None
+        model_type = _effective_model_type_display(raw, app_state.get().get("model_type"))
+
+        if model_type is None:
+            return ui.div(
+                ui.tags.p(
+                    "Selecciona primero un tipo de modelo; entonces podrás afinar órdenes (p, d, q) si desactivas la selección automática.",
+                    class_="text-muted",
+                ),
+                class_="mb-3",
+            )
+
         if auto_select:
             return ui.div(
-                ui.tags.p("Los parámetros se seleccionarán automáticamente", class_="text-muted"),
-                class_="mb-3"
-            )
-        
-        model_type = input.model_type() if hasattr(input, 'model_type') else None
-        if not model_type:
-            model_type = app_state.get().get("model_type", None)
-        if not model_type:
-            return ui.div(
-                ui.tags.p("Selecciona un tipo de modelo para configurar parámetros.", class_="text-muted"),
-                class_="mb-3"
+                ui.tags.p(
+                    "Los parámetros se seleccionarán automáticamente para el modelo elegido.",
+                    class_="text-muted",
+                ),
+                class_="mb-3",
             )
         
         if model_type == "AR":
@@ -1115,7 +1127,12 @@ def server(input, output, session):
     def execution_summary():
         """Show execution configuration summary"""
         state = app_state.get()
-        model_type = state.get("model_type", "N/A")
+        try:
+            raw = input.model_type() if hasattr(input, "model_type") else None
+        except Exception:
+            raw = None
+        mt = _effective_model_type_display(raw, state.get("model_type"))
+        model_type = mt if mt is not None else "—"
         value_col = state.get("value_column", "N/A")
         auto_select = input.auto_select() if hasattr(input, 'auto_select') else True
         exec_meta = state.get("execution_metadata", {}) or {}
@@ -1135,7 +1152,11 @@ def server(input, output, session):
     def spark_parallel_status_ui():
         """Show Spark parallel availability before execution."""
         state = app_state.get()
-        model_type = state.get("model_type")
+        try:
+            raw = input.model_type() if hasattr(input, "model_type") else None
+        except Exception:
+            raw = None
+        model_type = _effective_model_type_display(raw, state.get("model_type"))
         if model_type not in ["AR", "MA", "ARMA", "ARIMA"]:
             return ui.div()
         status = tslib_service.get_spark_parallel_status(model_type=model_type)
@@ -1939,6 +1960,12 @@ def server(input, output, session):
             new_state = app_state.get().copy()
             new_state["data_loaded"] = False
             new_state["uploaded_data"] = None
+            new_state["current_step"] = 0
+            new_state["data_validated"] = False
+            new_state["validation_report"] = {}
+            new_state["exploratory_analysis"] = None
+            new_state["analysis_complete"] = False
+            stepper.current_step = 0
             app_state.set(new_state)
             return
         
@@ -1991,8 +2018,80 @@ def server(input, output, session):
             "rows": int(df.shape[0]),
             "columns": int(df.shape[1])
         }
+        # New file: restart wizard at upload step and clear downstream state
+        new_state["current_step"] = 0
+        new_state["data_validated"] = False
+        new_state["validation_report"] = {}
+        new_state["exploratory_analysis"] = None
+        new_state["analysis_complete"] = False
+        stepper.current_step = 0
         app_state.set(new_state)
-    
+
+    def _run_auto_validate_and_maybe_advance(
+        df: pd.DataFrame,
+        value_col: str,
+        date_col: str,
+    ) -> None:
+        """Validate chosen columns while on step 0; does not change step (use «Siguiente»)."""
+        if not value_col or date_col is None:
+            return
+
+        with reactive.isolate():
+            base = app_state.get().copy()
+            if base.get("current_step", 0) != 0:
+                return
+
+        try:
+            validation_result, w_val = run_with_recorded_warnings(
+                lambda: tslib_service.validate_data(df, value_col)
+            )
+            exploratory = None
+            w_exp: list[str] = []
+            if validation_result.get("valid"):
+                if pd.api.types.is_numeric_dtype(df[value_col]):
+                    data = df[value_col].values
+                else:
+                    data = tslib_service.convert_to_numeric(df, value_col).values
+                exploratory, w_exp = run_with_recorded_warnings(
+                    lambda: tslib_service.get_exploratory_analysis(
+                        data,
+                        validation_report=validation_result.get("quality_report", {}),
+                    )
+                )
+            rw = list(dict.fromkeys(w_val + w_exp))
+            validation_result = {**validation_result, "runtime_warnings": rw}
+        except Exception as e:
+            ui.notification_show(
+                f"Error en validación: {str(e)}",
+                type="error",
+                duration=5,
+            )
+            return
+
+        new_state = base.copy()
+        new_state["value_column"] = value_col
+        new_state["date_column"] = None if date_col == "(Ninguna)" else date_col
+        new_state["data_validated"] = bool(validation_result["valid"])
+        new_state["validation_report"] = validation_result
+        new_state["exploratory_analysis"] = exploratory
+        app_state.set(new_state)
+
+    @reactive.effect
+    @reactive.event(input.value_column, input.date_column)
+    def auto_validate_on_column_inputs():
+        """Re-validate when user changes column picks (step 0 only)."""
+        df = uploaded_dataframe.get()
+        if df is None:
+            return
+        try:
+            vc = input.value_column()
+            dc = input.date_column()
+        except Exception:
+            return
+        if not vc or dc is None:
+            return
+        _run_auto_validate_and_maybe_advance(df, vc, dc)
+
     # Column selection handler
     @reactive.effect
     @reactive.event(input.value_column)
@@ -2004,7 +2103,6 @@ def server(input, output, session):
         value_col = input.value_column()
         new_state = app_state.get().copy()
         new_state["value_column"] = value_col
-        new_state["data_validated"] = False  # Reset validation
         app_state.set(new_state)
     
     @reactive.effect
@@ -2018,58 +2116,6 @@ def server(input, output, session):
         new_state = app_state.get().copy()
         new_state["date_column"] = date_col if date_col != "(Ninguna)" else None
         app_state.set(new_state)
-    
-    # Data validation handler
-    @reactive.effect
-    @reactive.event(input.validate_data)
-    def handle_validate_data():
-        """Handle data validation"""
-        df = uploaded_dataframe.get()
-        state = app_state.get()
-        value_col = state.get("value_column")
-        
-        if df is None or value_col is None:
-            ui.notification_show(
-                "Selecciona una columna de valores primero",
-                type="warning",
-                duration=3
-            )
-            return
-        
-        try:
-            validation_result, w_val = run_with_recorded_warnings(
-                lambda: tslib_service.validate_data(df, value_col)
-            )
-
-            exploratory = None
-            w_exp: list[str] = []
-            if validation_result.get("valid"):
-                if pd.api.types.is_numeric_dtype(df[value_col]):
-                    data = df[value_col].values
-                else:
-                    data = tslib_service.convert_to_numeric(df, value_col).values
-
-                exploratory, w_exp = run_with_recorded_warnings(
-                    lambda: tslib_service.get_exploratory_analysis(
-                        data,
-                        validation_report=validation_result.get("quality_report", {}),
-                    )
-                )
-            rw = list(dict.fromkeys(w_val + w_exp))
-            validation_result = {**validation_result, "runtime_warnings": rw}
-
-            new_state = state.copy()
-            new_state["data_validated"] = validation_result["valid"]
-            new_state["validation_report"] = validation_result
-            new_state["exploratory_analysis"] = exploratory
-            app_state.set(new_state)
-
-        except Exception as e:
-            ui.notification_show(
-                f"Error en validación: {str(e)}",
-                type="error",
-                duration=5
-            )
     
     # Model type change handler
     @reactive.effect
@@ -2124,7 +2170,11 @@ def server(input, output, session):
         df = uploaded_dataframe.get()
         state = app_state.get()
         value_col = state.get("value_column")
-        model_type = state.get("model_type", "ARIMA")
+        try:
+            raw_mt = input.model_type() if hasattr(input, "model_type") else None
+        except Exception:
+            raw_mt = None
+        model_type = _effective_model_type_display(raw_mt, state.get("model_type"))
         
         if df is None or value_col is None:
             ui.notification_show(
@@ -2133,35 +2183,33 @@ def server(input, output, session):
                 duration=3
             )
             return
+
+        if model_type is None:
+            ui.notification_show(
+                "Selecciona un tipo de modelo (AR, MA, ARMA o ARIMA) antes de ejecutar.",
+                type="warning",
+                duration=4,
+            )
+            return
         
         if not state.get("data_validated"):
             ui.notification_show(
-                "Valida los datos primero",
+                "Los datos no están validados; vuelve al paso de carga y revisa los mensajes.",
                 type="warning",
                 duration=3
             )
             return
         
         try:
+            validation_bundle = state.get("validation_report") or {}
+            quality_report = validation_bundle.get("quality_report") or {}
+
             # Get data and convert to numeric if needed
             if pd.api.types.is_numeric_dtype(df[value_col]):
                 data = df[value_col].values
             else:
                 data = tslib_service.convert_to_numeric(df, value_col).values
 
-            quality_report = (state.get("validation_report", {}) or {}).get("quality_report", {})
-            stationarity = tslib_service.get_stationarity_guidance(quality_report)
-            if model_type in ["AR", "MA", "ARMA"] and stationarity.get("recommended_stationary_only_block"):
-                msg = (
-                    "La serie muestra señal de no estacionariedad (tendencia). "
-                    f"Para {model_type} usa primero diferenciación o selecciona ARIMA."
-                )
-                new_state = app_state.get().copy()
-                new_state["execution_log"].append(f"⚠ {msg}")
-                app_state.set(new_state)
-                ui.notification_show(msg, type="warning", duration=6)
-                return
-            
             # Get model parameters
             auto_select = input.auto_select() if hasattr(input, 'auto_select') else True
             forecast_steps = input.forecast_steps() if hasattr(input, 'forecast_steps') else 10

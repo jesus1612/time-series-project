@@ -1,25 +1,48 @@
 # Model selection feature UI components
+from typing import Optional
+
 from shiny import ui
+
 from components.layout import create_card, create_form_group
+
+_MODEL_CHOICES = {
+    "__none__": "— Selecciona un modelo —",
+    "AR": "AR - Autoregresivo",
+    "MA": "MA - Media Móvil",
+    "ARMA": "ARMA - Combinado",
+    "ARIMA": "ARIMA - Integrado",
+}
 
 
 def render_model_selection_ui(
     auto_select_value: bool = True,
+    selected_model_type: Optional[str] = None,
 ) -> ui.Tag:
     """Render model selection step UI components
     
     Args:
         auto_select_value: Initial value for the auto_select switch (default: True)
+        selected_model_type: Hydrated model id from app state when (re)entering this step
     """
+    sel = (
+        selected_model_type
+        if selected_model_type in ("AR", "MA", "ARMA", "ARIMA")
+        else "__none__"
+    )
     
     return create_card(
         title="⚙️ Modelo y ejecución",
         subtitle="Configura el modelo y ejecuta el análisis",
         content=ui.div(
-            # Model type selector
+            # Model type selector (static id: stable reactive deps for p/d/q outputs)
             ui.div(
                 ui.tags.h5("Tipo de modelo:"),
-                ui.output_ui("model_type_select"),
+                ui.input_select(
+                    "model_type",
+                    "",
+                    choices=_MODEL_CHOICES,
+                    selected=sel,
+                ),
                 ui.output_ui("model_description"),
                 class_="mb-4"
             ),

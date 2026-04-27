@@ -1,0 +1,552 @@
+% Single-file standalone: pdflatex parallel_arima_complexity_analysis.tex (run twice for TOC/refs)
+% From this directory: cd time-series-library/docs && pdflatex parallel_arima_complexity_analysis.tex
+
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{ifthen}
+
+\geometry{margin=2.5cm}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\newtheorem{remark}{Observación}
+
+\title{Análisis de complejidad computacional:\\
+\texttt{ParallelARIMAWorkflow} (TSLib / Spark) frente a ARIMA lineal (statsmodels)}
+\author{Notas técnicas (TSLib)}
+\date{\today}
+
+% Timings for Section~\ref{sec:calibration} (regenerate with docs/calibrate_parallel_arima_complexity.py)
+\input{parallel_arima_complexity_calibration.tex}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Se formaliza el coste asintótico del flujo de once pasos implementado en
+\texttt{ParallelARIMAWorkflow} frente a un ajuste ARIMA clásico en un solo proceso.
+Se derivan desigualdades de \emph{break-even} en tiempo de pared, se ilustra con un
+ejemplo numérico, una tabla de \textbf{calibración medida} (script Python que
+rellena macros en \texttt{parallel\_arima\_complexity\_calibration.tex}) y el
+enlace a métodos en \texttt{parallel\_arima\_workflow.py} y a statsmodels en Shiny.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% --------------------------------------------------------------------------
+\section{Notación y variables (alineación con el código)}
+
+Sea la serie observada de longitud $n$. Tras el paso de estacionariedad (log y/o
+diferencias hasta \texttt{d\_max}), se obtiene la serie de trabajo de longitud
+efectiva que denotamos también por $n$ salvo que se pierdan observaciones por
+diferenciación (en ese caso, sustitúyase $n$ por $n_{\mathrm{eff}}$).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Parámetros simbólicos y correspondencia con TSLib / PySpark.}
+  \label{tab:notation}
+  \begin{tabular}{@{}clp{6.8cm}@{}}
+    \toprule
+    Símbolo & Origen típico en código & Interpretación \\
+    \midrule
+    $n$ & \texttt{len(working\_data\_)} & Longitud de la serie de trabajo \\
+    $d$ & orden de integración elegido en paso 1 & Fijo para la rejilla $(p,d,q)$ \\
+    $P_{\max}$ & \texttt{max\_p} & Cota superior de orden AR en la rejilla \\
+    $Q_{\max}$ & \texttt{max\_q} & Cota superior de orden MA en la rejilla \\
+    $W_s$ & \texttt{num\_sliding\_windows} & Número de ventanas deslizantes \\
+    $W_f$ & \texttt{num\_fixed\_windows} & Número de ventanas fijas (validación) \\
+    $K$ & \texttt{full\_sample\_reconcile\_top\_k} & Ajustes en muestra completa (top-$K$) \\
+    $P$ & paralelismo efectivo Spark & Número de tareas útiles concurrentes (aprox.) \\
+    $\alpha$ & overhead JVM / plan / shuffle / I/O & Término fijo por \emph{jobs} Spark \\
+    $L$ & longitud media ventana deslizante & $\Theta(n)$ o $\Theta(n/W_s)$ según diseño \\
+    $L_f$ & longitud típica ventana fija & Acotada por $n$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Tamaño de la rejilla de órdenes}
+
+Tras fijar $d$, el generador \texttt{\_generate\_parameter\_combinations} recorre
+$p \in \{0,\ldots,P_{\max}\}$ y $q \in \{0,\ldots,Q_{\max}\}$ y excluye $(p,q)=(0,0)$.
+Definimos
+\begin{equation}
+  \label{eq:C}
+  C \;:=\; (P_{\max}+1)(Q_{\max}+1) - 1 .
+\end{equation}
+
+% --------------------------------------------------------------------------
+\section{Implementación en código (TSLib)}
+
+La clase \texttt{ParallelARIMAWorkflow} vive en
+\texttt{tslib/spark/parallel\_arima\_workflow.py}. El método público \texttt{fit}
+encadena los pasos 1--10; \texttt{predict} es el paso 11 (pronóstico con el modelo
+final, sin Spark). La Tabla~\ref{tab:code-map} resume la correspondencia entre la
+demostración de complejidad y las rutinas internas (nombres reales del repositorio).
+
+\begin{table}[htbp]
+  \centering
+  \caption{Pasos del workflow $\rightarrow$ métodos en \texttt{parallel\_arima\_workflow.py}.}
+  \label{tab:code-map}
+  \begin{tabular}{@{}cp{8.2cm}p{3.8cm}@{}}
+    \toprule
+    Paso & Rol en el análisis $T_{\mathrm{par}}$ & Método(s) principal(es) \\
+    \midrule
+    1 & $\mathcal{O}(n\cdot d_{\max})$ ADF/KPSS, log opcional & \texttt{\_determine\_differencing\_order} \\
+    2--3 & $\mathcal{O}(n)$ ACF/PACF; $\mathcal{O}(C)$ rejilla & \texttt{\_determine\_parameter\_ranges},
+          \texttt{\_apply\_grid\_mode\_to\_config}, \texttt{\_generate\_parameter\_combinations} \\
+    4 & $W_s$ ventanas, longitud $\sim L$ & \texttt{\_create\_sliding\_windows} \\
+    5 & $\Theta(W_s C\, f(L))$ repartido en $P$ & \texttt{\_fit\_models\_parallel\_sliding}
+          (\texttt{mapInPandas} / DataFrame de tareas) \\
+    6 & agregación $\mathcal{O}(W_s C)$ & \texttt{\_select\_global\_model} \\
+    6b & $K\, f(n)$ opcional & \texttt{\_reconcile\_order\_full\_sample\_aic} \\
+    7--8 & $\Theta(W_f\, f(L_f))$ & \texttt{\_create\_fixed\_windows},
+          \texttt{\_backtest\_fixed\_windows} \\
+    9 & diagnósticos por ventana fija & \texttt{\_diagnose\_residuals} \\
+    10 & $\mathcal{O}(f(n))$ vecinos $(p\pm1,q\pm1)$ & \texttt{\_check\_diagnostic\_failures},
+          \texttt{\_try\_local\_adjustment} \\
+    cierre & $f(n)$ ajuste final & \texttt{ARIMAProcess(...).fit(working\_data)} en \texttt{fit} \\
+    11 & pronóstico & \texttt{predict} $\rightarrow$ \texttt{ARIMAProcess.predict} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+El término $\alpha$ de la ecuación~\eqref{eq:Tpar} incluye tiempos medidos en
+\texttt{spark\_timing\_} (p.\,ej.\ \texttt{executor\_warmup\_s}) y el coste de
+materializar/reparticionar el DataFrame de tareas antes del \texttt{mapInPandas}.
+La comparación lineal en la aplicación Shiny usa \texttt{statsmodels}
+\texttt{ARIMA} sobre la misma \texttt{working\_data\_}; véase
+\texttt{tslib-shiny-app/services/tslib\_service.py} y
+\texttt{docs/SPARK\_VS\_LINEAR.md}.
+
+% --------------------------------------------------------------------------
+\section{Modelo de coste de un único ajuste MLE}
+
+Denotemos por $f(m;\,p,d,q)$ el tiempo (o FLOPs proporcionales) de ajustar un
+ARIMA$(p,d,q)$ por máxima verosimilitud sobre una subserie de longitud $m$
+(incluye iteraciones del optimizador). Supondremos que existe $\gamma \ge 1$ y
+constantes $c_1,c_2>0$ tales que
+\begin{equation}
+  \label{eq:fgrowth}
+  c_1\, m^{\gamma} \;\le\; f(m;\,p,d,q) \;\le\; c_2\, m^{\gamma}\, h(p,q)
+\end{equation}
+para un factor $h(p,q)$ acotado polinomialmente en $(p,q)$ en la rejilla. En la
+práctica, statsmodels y \texttt{ARIMAProcess} pueden estar entre $\gamma\approx 1$
+(idealización lineal en $m$) y $\gamma>1$ si el coste por iteración crece
+superlinealmente con $m$.
+
+\begin{remark}
+  El análisis de \emph{break-even} solo usa órdenes de magnitud; las constantes
+  $c_1,c_2$ se absorben en calibración empírica.
+\end{remark}
+
+% --------------------------------------------------------------------------
+\section{Desglose por pasos del \texttt{ParallelARIMAWorkflow}}
+
+El método \texttt{fit} orquesta los pasos 1--10; el paso 11 es \texttt{predict}
+(no paralelizado). A nivel de complejidad:
+
+\begin{description}
+  \item[Paso 1 -- Diferenciación / estacionariedad]
+  Bucle ADF/KPSS hasta \texttt{d\_max}: coste del orden
+  $\mathcal{O}(n \cdot d_{\max})$ en el driver.
+
+  \item[Pasos 2--3 -- Rejilla $(p,d,q)$]
+  Generación de $C$ tuplas: $\mathcal{O}(C)$. ACF/PACF sobre $n$:
+  $\mathcal{O}(n)$ (driver).
+
+  \item[Paso 4 -- Ventanas deslizantes]
+  Construcción de $W_s$ ventanas: $\mathcal{O}(W_s \cdot L)$; con ventanas que
+  particionan o solapan una fracción fija de $n$, suele ser $\mathcal{O}(n W_s)$
+  en el peor caso razonable o $\mathcal{O}(n)$ si $L=\Theta(n/W_s)$.
+
+  \item[Paso 5 -- Spark: MLE por (ventana, orden)]
+  Se lanzan del orden de $W_s \cdot C$ ajustes independientes sobre longitud
+  $\approx L$. Coste serial equivalente:
+  \begin{equation}
+    T^{(5)}_{\mathrm{ser}} \;=\; \Theta\!\big(W_s\, C\, f(L)\big) .
+  \end{equation}
+  Tiempo de pared ideal (paralelismo perfecto, sin overhead):
+  $T^{(5)}_{\mathrm{par}} \approx T^{(5)}_{\mathrm{ser}} / P$.
+
+  \item[Paso 6 -- Selección global]
+  Agregación sobre resultados: $\mathcal{O}(W_s \cdot C)$ (dominado por el paso 5).
+
+  \item[Paso 6b -- Reconciliación opcional]
+  $K$ ajustes en muestra completa:
+  \begin{equation}
+    T^{(6b)} \;=\; \Theta\!\big(K\, f(n)\big) .
+  \end{equation}
+
+  \item[Pasos 7--8 -- Ventanas fijas y backtest]
+  $\Theta(W_f\, f(L_f))$ más overhead Spark si aplica.
+
+  \item[Paso 9 -- Diagnósticos]
+  $\mathcal{O}(W_f)$ veces coste de diagnóstico sobre residuos; usualmente menor
+  que el paso 5 si $W_f \ll W_s C$.
+
+  \item[Paso 10 -- Ajuste local en vecinos]
+  Acotado por un número constante de órdenes adyacentes: $\mathcal{O}(f(n))$ en el
+  peor caso.
+
+  \item[Cierre -- Modelo final]
+  Un ajuste \texttt{ARIMAProcess.fit} en toda la serie:
+  $\Theta(f(n))$.
+\end{description}
+
+\subsection{Tiempo de pared agregado (modelo simplificado)}
+
+Agrupando términos y añadiendo overhead Spark $\alpha$:
+\begin{equation}
+  \label{eq:Tpar}
+  T_{\mathrm{par}} \;\approx\;
+  \alpha
+  \;+\; \frac{W_s\, C}{P}\, f(L)
+  \;+\; K\, f(n)
+  \;+\; \mathcal{O}\!\big(W_f\, f(L_f)\big)
+  \;+\; f(n) .
+\end{equation}
+
+% --------------------------------------------------------------------------
+\section{Baseline lineal (statsmodels)}
+
+\subsection{Un solo modelo en la serie completa}
+
+Si el baseline es un único \texttt{ARIMA(p,d,q).fit} sobre longitud $n$:
+\begin{equation}
+  \label{eq:Tlin1}
+  T_{\mathrm{lin}}^{(1)} \;=\; \Theta\!\big(f(n)\big) .
+\end{equation}
+
+\subsection{Búsqueda en rejilla secuencial (comparable al espacio de órdenes)}
+
+Si el baseline recorre los mismos $C$ órdenes, cada uno en longitud $n$, de
+forma secuencial:
+\begin{equation}
+  \label{eq:TlinC}
+  T_{\mathrm{lin}}^{(C)} \;=\; \Theta\!\big(C\, f(n)\big) .
+\end{equation}
+
+% --------------------------------------------------------------------------
+\section{Desigualdades de break-even}
+
+\subsection{Frente a un único ajuste lineal}
+
+Queremos $T_{\mathrm{par}} < T_{\mathrm{lin}}^{(1)}$. Sustituyendo
+\eqref{eq:Tpar} y \eqref{eq:Tlin1} y conservando términos dominantes:
+\begin{equation}
+  \alpha + \frac{W_s C}{P} f(L) + K f(n) + f(n) \;<\; c\, f(n)
+\end{equation}
+para alguna constante $c$ que encapsula el baseline. Como $K f(n) + f(n) =
+\Theta(f(n))$ con $K\ge 1$ típicamente, la parte izquierda contiene ya un término
+lineal en $f(n)$ \emph{más} el término positivo $\frac{W_s C}{P} f(L)$. Por tanto,
+salvo que $\frac{W_s C}{P} f(L)$ y $\alpha$ sean despreciables frente a $f(n)$ (o
+$f(n)$ sea artificialmente grande), \textbf{no existe ventaja asintótica} del
+workflow paralelo frente a \emph{un solo} fit en $n$: el pipeline está diseñado
+para exploración robusta (muchas ventanas y órdenes), no para minimizar trabajo
+total frente a un único MLE.
+
+\begin{remark}[Lectura práctica]
+  Coincide con la nota de repositorio \texttt{SPARK\_VS\_LINEAR.md}: con una sola
+  serie y rejilla moderada, el coste fijo $\alpha$ y la multiplicidad $W_s C$
+  suelen hacer que el lineal gane si el objetivo es solo ``un ARIMA en $n$''.
+\end{remark}
+
+\subsection{Frente a búsqueda en rejilla secuencial en $n$}
+
+Comparamos \eqref{eq:Tpar} con \eqref{eq:TlinC}. Idealizando $f(m) = c\, m^\gamma$
+con $\gamma\ge 1$ y omitiendo $W_f$, $\alpha$ temporalmente:
+\begin{equation}
+  \frac{W_s C}{P}\, L^\gamma \;<\; C\, n^\gamma
+  \quad\Longleftrightarrow\quad
+  \frac{W_s}{P}\left(\frac{L}{n}\right)^\gamma \;<\; 1 .
+\end{equation}
+
+Si $L \approx n / W_s$ (ventanas que cubren en promedio una fracción $1/W_s$ de
+la serie):
+\begin{equation}
+  \label{eq:breakeven-gamma}
+  \frac{W_s}{P}\, W_s^{-\gamma} \;<\; 1
+  \quad\Longleftrightarrow\quad
+  W_s^{\,1-\gamma} \;<\; P .
+\end{equation}
+
+\begin{itemize}
+  \item Si $\gamma=1$: \eqref{eq:breakeven-gamma} se reduce a $1 < P$: cualquier
+  paralelismo $P>1$ reduce el tiempo de pared del bloque paralelo respecto a la
+  ejecución secuencial \emph{de ese bloque}; el trabajo total serial equivalente
+  del paso 5 es del mismo orden $\Theta(C n)$ que $C$ fits completos lineales en
+  $n$ bajo $L\approx n/W_s$ y $f$ lineal en $m$.
+  \item Si $\gamma>1$: al crecer $W_s$, el miembro izquierdo
+  $W_s^{1-\gamma}=W_s^{-(\gamma-1)}$ decrece: \textbf{muchas ventanas cortas}
+  reducen el coste agregado del paso 5 frente a $C$ fits en longitud $n$, y el
+  paralelismo $P$ acota el tiempo de pared.
+\end{itemize}
+
+Restaurando overhead, una condición suficiente grosera para que el paralelo
+gane frente a la rejilla secuencial completa es
+\begin{equation}
+  \alpha + \frac{W_s C}{P}\, L^\gamma + (K+1) n^\gamma
+  \;<\; C\, n^\gamma ,
+\end{equation}
+es decir,
+\begin{equation}
+  \boxed{
+  \alpha \;<\; C\, n^\gamma \left(1 - \frac{W_s}{P}\left(\frac{L}{n}\right)^\gamma\right)
+  - (K+1) n^\gamma
+  }
+\end{equation}
+siempre que el paréntesis sea positivo. En la práctica se calibra $f$ y $\alpha$
+por medición.
+
+% --------------------------------------------------------------------------
+\section{Estimación con umbral numérico: cuándo gana el paralelo}
+\label{sec:hard-threshold}
+
+Sí se puede obtener un \textbf{número duro} si fijamos un modelo de tiempos
+medibles y resolvemos la igualdad en el \emph{break-even}. Las magnitudes deben
+obtenerse en tu máquina o cluster (cronómetro o \texttt{spark\_timing\_} +
+profiling del paso 5).
+
+\subsection{Modelo de tiempos medidos}
+
+Sea $\tau_{\mathrm{task}}$ el tiempo medio de una tarea del paso~5 (un ajuste
+MLE en una ventana deslizante de longitud típica $L$). Sea $\tau_{\mathrm{full}}(n)$
+el tiempo de un ajuste MLE en toda la serie de longitud $n$ (mismo orden
+promedio que en la rejilla lineal). Sea $\alpha$ el overhead acumulado Spark
+relevante (JVM, repartición, materialización). Ignorando por simplicidad el
+backtest frente a $\tau_{\mathrm{full}}$, una comparación honesta frente a
+\textbf{rejilla lineal completa} en $n$ es
+\begin{equation}
+  \label{eq:Twall-grid}
+  T_{\mathrm{par}} \approx
+  \alpha + \frac{W_s\, C}{P}\,\tau_{\mathrm{task}}
+  + (K+1)\,\tau_{\mathrm{full}}(n),
+  \qquad
+  T_{\mathrm{lin}}^{(C)} \approx C\,\tau_{\mathrm{full}}(n).
+\end{equation}
+El paralelo gana si $T_{\mathrm{par}} < T_{\mathrm{lin}}^{(C)}$, es decir
+\begin{equation}
+  \label{eq:ineq-tau}
+  \boxed{
+  \alpha + \frac{W_s\, C}{P}\,\tau_{\mathrm{task}}
+  \;<\; \bigl(C - K - 1\bigr)\,\tau_{\mathrm{full}}(n)
+  }
+\end{equation}
+siempre que $C > K + 1$ (en la práctica sí: p.\,ej.\ $C=35$, $K=15$ da $35>16$).
+Si $C \le K+1$, la reconciliación domina y la desigualdad no tiene sentido físico
+para comparar contra $C$ fits únicos.
+
+\subsection{Umbral en tiempo de un fit completo}
+
+Despejando $\tau_{\mathrm{full}}(n)$ en la igualdad $T_{\mathrm{par}} = T_{\mathrm{lin}}^{(C)}$:
+\begin{equation}
+  \label{eq:tau-star}
+  \tau_{\mathrm{full}}^{\,*}(n)
+  \;=\;
+  \frac{\displaystyle \alpha + \frac{W_s\, C}{P}\,\tau_{\mathrm{task}}}
+       {\,C - K - 1\,}.
+\end{equation}
+Si en la práctica $\tau_{\mathrm{full}}(n) > \tau_{\mathrm{full}}^{\,*}$ (fits
+lentos o $n$ grande), el workflow paralelo \textbf{supera} a recorrer los $C$
+modelos en serie sobre longitud $n$. Si $\tau_{\mathrm{full}}$ es muy pequeño
+(series cortas o optimizador muy rápido), gana el lineal.
+
+\paragraph{Ejemplo con cifras fijas.}
+Con $W_s=8$, $C=35$, $P=8$, $K=15$ se tiene $\frac{W_s C}{P}=35$ y $C-K-1=19$.
+Si $\alpha=3\,\mathrm{s}$ y $\tau_{\mathrm{task}}=0{,}05\,\mathrm{s}$,
+\[
+  \tau_{\mathrm{full}}^{\,*} = \frac{3 + 35\cdot 0{,}05}{19}
+  = \frac{4{,}75}{19} \approx \mathbf{0{,}25\,\mathrm{s}}.
+\]
+Cada fit lineal en muestra completa debe durar \emph{menos} de unos $0{,}25\,\mathrm{s}$
+para que la rejilla secuencial de $35$ órdenes gane; si cada fit tarda
+$0{,}8\,\mathrm{s}$, el paralelo gana con margen ($T_{\mathrm{lin}}^{(C)}\approx 28\,\mathrm{s}$
+frente a $T_{\mathrm{par}}\approx 3+1{,}75+16\cdot 0{,}8 \approx 17{,}55\,\mathrm{s}$).
+
+\subsection{Umbral en longitud de serie \texorpdfstring{$n^{*}$}{n star} (modelo potencia)}
+
+Supongamos $\tau_{\mathrm{full}}(n)=c\,n^\gamma$ y
+$\tau_{\mathrm{task}}(n)=c\,(n/W_s)^\gamma$ (ventanas homogéneas de longitud
+$n/W_s$). Sustituyendo en \eqref{eq:ineq-tau} y despejando $n$ en el caso borde
+$\alpha + \frac{W_s C}{P}\, c\,(n/W_s)^\gamma = (C-K-1)\, c\, n^\gamma$:
+\begin{equation}
+  \label{eq:n-star}
+  \boxed{
+  n^{\,*}
+  \;=\;
+  \left(
+  \frac{\alpha}
+       {\,c\left(\, C - K - 1 - \dfrac{C}{P}\, W_s^{\,1-\gamma}\,\right)\,}
+  \right)^{\!1/\gamma}
+  }.
+\end{equation}
+Para $\gamma=1$ la fórmula se simplifica a
+\begin{equation}
+  \label{eq:n-star-gamma1}
+  n^{\,*}
+  \;=\;
+  \frac{\alpha}
+       {\,c\left(\, C - K - 1 - \dfrac{C}{P}\,\right)\,}
+  \qquad\text{(requiere } C - K - 1 - \tfrac{C}{P} > 0\text{)}.
+\end{equation}
+Con los mismos $C=35$, $K=15$, $P=8$: $C-K-1-C/P = 35-16-4{,}375 = 14{,}625$.
+Si $\alpha=6\,\mathrm{s}$ y se estima $c = \tau_{\mathrm{full}}/n$ en una corrida
+piloto con $n_0=2000$ y $\tau_{\mathrm{full}}=1{,}2\,\mathrm{s}$ (luego
+$c \approx 6\times 10^{-4}\,\mathrm{s}$ por observación),
+\[
+  n^{\,*}
+  \approx \frac{6}{6\times 10^{-4} \times 14{,}625}
+  \approx \mathbf{684\ \text{observaciones}}.
+\]
+Interpretación: frente a \textbf{una rejilla secuencial de $C$ fits en longitud
+$n$}, el modelo predice que, con esos $\alpha$ y $c$, para $n \gtrsim 700$ el
+paralelo ya compensa el overhead; para $n$ menores, el lineal puede ser más
+rápido. El número cambia al cambiar $\alpha$, $P$, $K$ o la calibración de $c$.
+
+\subsection{Frente a un solo fit lineal}
+
+Para $T_{\mathrm{lin}}^{(1)} \approx c\,n^\gamma$ la desigualdad
+$T_{\mathrm{par}} < T_{\mathrm{lin}}^{(1)}$ exige
+$\alpha + \frac{W_s C}{P} c (n/W_s)^\gamma + (K+1) c n^\gamma < c n^\gamma$,
+es decir $\alpha + \frac{W_s C}{P} c (n/W_s)^\gamma < -K c n^\gamma$, imposible
+si $K\ge 1$ y todos los términos son positivos. En este modelo \textbf{no hay}
+$n^{*}$ finito: el workflow no está optimizado para batir a \emph{un único} MLE;
+el umbral \eqref{eq:n-star} aplica frente a \textbf{búsqueda comparable} en $C$
+órdenes.
+
+% --------------------------------------------------------------------------
+\section{Calibración medida y regeneración automática}
+\label{sec:calibration}
+
+Los valores numéricos de esta sección provienen del fichero
+\texttt{parallel\_arima\_complexity\_calibration.tex}, generado por el script
+\texttt{docs/calibrate\_parallel\_arima\_complexity.py} (última ejecución:
+\texttt{\CalGenAt}). El script mide, sobre una serie sintética acumulativa
+Gaussiana de longitud \CalNCal{} y una ventana de longitud \CalLWin{}, la mediana
+de tiempos de \texttt{ARIMAProcess}\CalPDQ{} con \texttt{n\_jobs=1} (mismo
+núcleo MLE que en el paso distribuido del workflow). Para $\alpha$, intenta
+PySpark en \texttt{local[1]} (una sesión y un \texttt{count} mínimo); si PySpark
+no está instalado, $\alpha=0$ y el umbral $n^{*}$ del modelo lineal no aplica.
+
+\subsection{Comando para volver a medir y actualizar el PDF}
+
+Desde la raíz del paquete \texttt{time-series-library} (con un entorno virtual
+que cumpla \texttt{requirements.txt}):
+
+\begin{verbatim}
+python3 -m venv .venv-doc-calib
+.venv-doc-calib/bin/pip install -r requirements.txt
+.venv-doc-calib/bin/python docs/calibrate_parallel_arima_complexity.py
+cd docs && pdflatex parallel_arima_complexity_analysis.tex
+pdflatex parallel_arima_complexity_analysis.tex
+\end{verbatim}
+
+\subsection{Resultados insertados en este documento}
+
+Los parámetros de la desigualdad~\eqref{eq:ineq-tau} se fijan como en el texto
+($W_s=\CalWs$, $C=\CalCGrid$, $P=\CalPPar$, $K=\CalKTop$). La
+Tabla~\ref{tab:calib} resume las magnitudes medidas.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Calibración local (TSLib \texttt{ARIMAProcess}, mediana de varias corridas).}
+  \label{tab:calib}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    Magnitud & Valor \\
+    \midrule
+    $\alpha$ (overhead Spark; $0$ si no hay PySpark) &
+      $\CalAlphaNum\ \mathrm{s}$ \\
+    $\tau_{\mathrm{task}}$ (fit en ventana de longitud $\CalLWin$) &
+      $\CalTauTaskNum\ \mathrm{s}$ \\
+    $\tau_{\mathrm{full}}$ (fit en serie de longitud $\CalNCal$) &
+      $\CalTauFullNum\ \mathrm{s}$ \\
+    $c=\tau_{\mathrm{full}}/n$ (modelo $\gamma=1$) &
+      $\CalCPerObsNum\ \mathrm{s}$/obs. \\
+    $\tau_{\mathrm{full}}^{\,*}$ [ec.~\eqref{eq:tau-star}] &
+      $\CalTauStarNum\ \mathrm{s}$ \\
+    $T_{\mathrm{par}}$ / $T_{\mathrm{lin}}^{(C)}$ (estimadores \eqref{eq:Twall-grid}) &
+      $\CalTParEstNum\ \mathrm{s}$ / $\CalTLinEstNum\ \mathrm{s}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\ifthenelse{\equal{\CalibrationAlphaPositive}{1}}{%
+  Con $\alpha>0$ medido, el umbral de longitud bajo $\gamma=1$
+  [ec.~\eqref{eq:n-star-gamma1}] es $n^{*}\approx \CalNStarNum$ observaciones
+  (misma rejilla $C$, $W_s$, $P$, $K$ que en la tabla).%
+}{%
+  Con $\alpha\approx 0$ (sin PySpark en esta corrida), la fórmula
+  $n^{*}=\alpha/(c\,(C-K-1-C/P))$ se anula: el cuello pasa a ser solo la
+  relación $\tau_{\mathrm{task}}$ vs $\tau_{\mathrm{full}}$ y el término
+  $(K{+}1)\tau_{\mathrm{full}}$ en~\eqref{eq:Twall-grid}. Para obtener un
+  $n^{*}$ numérico de overhead, instala Java+PySpark y vuelve a ejecutar el
+  script.%
+}
+
+% --------------------------------------------------------------------------
+\section{Ejemplo numérico aplicado}
+
+Se toman valores inspirados en \texttt{\_determine\_parameter\_ranges} para
+series ``medianas'' ($500 < n \le 2000$) en
+\texttt{parallel\_arima\_workflow.py}: $P_{\max}=Q_{\max}=5$, de modo que
+$C=(6)(6)-1=35$. Sea $n=1500$, $W_s=8$, $W_f=7$, $K=15$, $P=8$ ejecutores
+útiles. Suponga $L=300$ (cada ventana deslizante usa unos 300 puntos) y
+$\gamma=1.2$, $c=1$ en unidades arbitrarias de tiempo por punto elevado a
+$\gamma$ (solo para ilustrar órdenes relativos).
+
+\begin{align*}
+  \frac{W_s C}{P}\, L^\gamma
+  &= \frac{8 \cdot 35}{8} \cdot 300^{1.2}
+   \approx 35 \cdot 300^{1.2} , \\
+  C\, n^\gamma &= 35 \cdot 1500^{1.2} .
+\end{align*}
+Numéricamente, $300^{1.2} \approx 623$, $1500^{1.2}\approx 5766$, luego
+\begin{align*}
+  \frac{W_s C}{P}\, L^\gamma &\approx 35 \times 623 \approx 2.18\times 10^4, \\
+  C\, n^\gamma &\approx 35 \times 5766 \approx 2.02\times 10^5 .
+\end{align*}
+El cociente $\dfrac{W_s C\, L^\gamma / P}{C\, n^\gamma}
+= \dfrac{W_s\, L^\gamma}{P\, n^\gamma} \approx 0{,}11$: el bloque paralelo
+idealizado del paso 5 sería del orden de \emph{un 11\%} del coste de ajustar
+los $C$ modelos en serie completa bajo esta hipótesis de $f$. Si
+$\alpha \approx 2\times 10^4$ (segundos escalados, p. ej. arranque Spark),
+entonces $\alpha$ es comparable al numerador anterior: el overhead puede
+\emph{anular} la ventaja si $n$ no es lo bastante grande.
+
+Con $\gamma=1$ y $L=n/W_s=1500/8\approx 187.5$:
+\begin{equation*}
+  \frac{W_s C}{P} L = \frac{8\cdot 35}{8}\cdot 187.5 = 35\cdot 187.5 = 6562.5,
+  \qquad
+  C n = 35\cdot 1500 = 52500 .
+\end{equation*}
+El paso 5 tiene trabajo serial equivalente $\approx 6.56\times 10^3$ frente a
+$5.25\times 10^4$ para $35$ fits en $n$: cociente $\approx 0{,}125 = 1/W_s$,
+coherente con $W_s\cdot (n/W_s)=n$ por combinación cuando $f$ es lineal en $m$.
+
+% --------------------------------------------------------------------------
+\section{Conclusión}
+
+El desglose \eqref{eq:Tpar} separa \textbf{overhead} ($\alpha$),
+\textbf{paralelismo} ($P$), \textbf{multiplicidad de tareas} ($W_s C$),
+\textbf{longitud de ventana} ($L$) y \textbf{reconciliación} ($K f(n)$). Para
+\textbf{rejilla lineal comparable}, la sección~\ref{sec:hard-threshold} da umbrales explícitos
+\eqref{eq:tau-star}--\eqref{eq:n-star-gamma1} en función de $\alpha$,
+$\tau_{\mathrm{task}}$, $\tau_{\mathrm{full}}$ y $c$. Frente a \emph{un solo} fit
+\eqref{eq:Tlin1}, no se espera cruce finito en el modelo con $K\ge 1$; conviene
+medir y reportar $\tau_{\mathrm{full}}^{\,*}$ y $n^{\,*}$ calibrados al entorno
+(sección~\ref{sec:calibration}).
+
+\begin{thebibliography}{9}
+  \bibitem{tslib-spark}
+  TSLib: \texttt{tslib/spark/parallel\_arima\_workflow.py},
+  \texttt{docs/SPARK\_VS\_LINEAR.md}.
+\end{thebibliography}
+
+\end{document}

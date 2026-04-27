@@ -107,23 +107,6 @@ def _validator_issue_to_spanish(issue: str) -> str:
     return issue
 
 
-def _has_trend_signal(validation_report: Optional[Dict[str, Any]]) -> bool:
-    """Detecta señal de tendencia desde recomendaciones del validador."""
-    if not validation_report:
-        return False
-    recs = validation_report.get("recommendations", [])
-    return any("Trend detected" in str(r) for r in recs)
-
-
-def _seasonality_periods(validation_report: Optional[Dict[str, Any]]) -> List[int]:
-    """Return detected seasonal periods from validator diagnostics."""
-    if not validation_report:
-        return []
-    seasonality = ((validation_report.get("diagnostics", {}) or {}).get("seasonality", {}) or {})
-    periods = seasonality.get("seasonal_periods", [])
-    return [int(p) for p in periods] if periods else []
-
-
 class StatsmodelsFittedARIMA:
     """
     Thin wrapper around statsmodels ARIMA fit result for the Shiny app (linear route).
@@ -319,11 +302,12 @@ class TSLibService:
             sp = _statsmodels_start_params_from_workflow(mod, workflow)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+                # statsmodels >= 0.13: ARIMA.fit does not take maxiter/disp; pass via method_kwargs
+                # to MLEModel.fit (0 iterations = keep start_params from Spark alignment).
                 res = mod.fit(
                     start_params=sp,
-                    maxiter=0,
                     method="statespace",
-                    disp=False,
+                    method_kwargs={"maxiter": 0, "disp": 0},
                 )
             return StatsmodelsFittedARIMA(
                 (p, d, q), y, res, inverse_forecast_fn=inv
@@ -366,9 +350,8 @@ class TSLibService:
                 warnings.simplefilter("ignore")
                 res = mod.fit(
                     start_params=sp,
-                    maxiter=0,
                     method="statespace",
-                    disp=False,
+                    method_kwargs={"maxiter": 0, "disp": 0},
                 )
             return StatsmodelsFittedARIMA(
                 (p, 0, 0), y, res, inverse_forecast_fn=inv
@@ -411,9 +394,8 @@ class TSLibService:
                 warnings.simplefilter("ignore")
                 res = mod.fit(
                     start_params=sp,
-                    maxiter=0,
                     method="statespace",
-                    disp=False,
+                    method_kwargs={"maxiter": 0, "disp": 0},
                 )
             return StatsmodelsFittedARIMA(
                 (0, 0, q), y, res, inverse_forecast_fn=inv
@@ -455,9 +437,8 @@ class TSLibService:
                 warnings.simplefilter("ignore")
                 res = mod.fit(
                     start_params=sp,
-                    maxiter=0,
                     method="statespace",
-                    disp=False,
+                    method_kwargs={"maxiter": 0, "disp": 0},
                 )
             return StatsmodelsFittedARIMA(
                 (p, 0, q), y, res, inverse_forecast_fn=inv
@@ -530,8 +511,8 @@ class TSLibService:
             for issue in vr.get("issues", []):
                 messages.append(_validator_issue_to_spanish(issue))
 
-            # DataValidator still fills quality_report (warnings, recommendations, diagnostics)
-            # for model gating (e.g. AR/MA/ARMA vs trend); we do not surface heuristic banners here.
+            # DataValidator quality_report carries issues, warnings, and diagnostics
+            # (e.g. trend/seasonality heuristics) for exploratory context; no UI gating by inference.
             warnings: List[str] = []
 
             if np.any(np.isnan(data)):
@@ -563,22 +544,6 @@ class TSLibService:
                 'has_issues': True
             }
 
-    def get_stationarity_guidance(self, validation_report: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Build stationarity guidance for model gating in UI.
-
-        For AR/MA/ARMA, trend signal is treated as non-stationarity risk and we
-        recommend ARIMA/differencing first.
-        """
-        vr = validation_report or {}
-        has_trend = _has_trend_signal(vr)
-        periods = _seasonality_periods(vr)
-        return {
-            "has_trend_signal": has_trend,
-            "seasonal_periods": periods,
-            "recommended_stationary_only_block": has_trend,
-        }
-    
     def detect_datetime_column(self, df: pd.DataFrame) -> Optional[str]:
         """
         Suggest a datetime column using TSLib heuristics (name, dtype, parse sample).

@@ -16,7 +16,7 @@ class DataValidator:
     """
     Comprehensive data validator for time series data
     
-    Validates data quality and provides cleaning recommendations
+    Validates data quality and exposes diagnostics (e.g. trend, seasonality heuristics).
     """
     
     def __init__(self, 
@@ -52,7 +52,7 @@ class DataValidator:
         Returns:
         --------
         results : dict
-            Validation results including issues and recommendations
+            Validation results including issues, warnings, and diagnostics
         """
         data = np.asarray(data, dtype=float)
         
@@ -62,7 +62,6 @@ class DataValidator:
             'warnings': [],
             'recommendations': [],
             'data_info': self._get_data_info(data),
-            'quality_metrics': self._calculate_quality_metrics(data),
             'diagnostics': {}
         }
         
@@ -84,22 +83,16 @@ class DataValidator:
         
         if np.var(data) == 0:
             results['warnings'].append("Constant data detected")
-            results['recommendations'].append("Consider if this is appropriate for time series analysis")
         
         outlier_info = self._detect_outliers(data)
         if outlier_info['has_outliers']:
             results['warnings'].append(f"Outliers detected: {outlier_info['outlier_count']} ({outlier_info['outlier_ratio']:.2%})")
-            results['recommendations'].append("Consider outlier treatment before modeling")
         
         seasonality_info = self._check_seasonality(data)
         results['diagnostics']['seasonality'] = seasonality_info
-        if seasonality_info['has_seasonality']:
-            results['recommendations'].append("Seasonal patterns detected - consider seasonal ARIMA")
         
         trend_info = self._check_trend(data)
         results['diagnostics']['trend'] = trend_info
-        if trend_info['has_trend']:
-            results['recommendations'].append("Trend detected - consider differencing")
         
         self._validation_results = results
         return results
@@ -126,44 +119,6 @@ class DataValidator:
             'max': np.max(data),
             'median': np.median(data),
             'data_type': str(data.dtype)
-        }
-    
-    def _calculate_quality_metrics(self, data: np.ndarray) -> Dict[str, float]:
-        """
-        Calculate data quality metrics
-        
-        Parameters:
-        -----------
-        data : np.ndarray
-            Time series data
-            
-        Returns:
-        --------
-        metrics : dict
-            Quality metrics
-        """
-        # Remove missing values for calculations
-        clean_data = data[~np.isnan(data)]
-        
-        if len(clean_data) == 0:
-            return {'completeness': 0.0, 'consistency': 0.0, 'validity': 0.0}
-        
-        # Completeness: ratio of non-missing values
-        completeness = len(clean_data) / len(data)
-        
-        # Consistency: inverse of coefficient of variation
-        if np.mean(clean_data) != 0:
-            consistency = 1.0 / (np.std(clean_data) / abs(np.mean(clean_data)))
-        else:
-            consistency = 1.0 if np.std(clean_data) == 0 else 0.0
-        
-        # Validity: ratio of finite values
-        validity = np.sum(np.isfinite(clean_data)) / len(data)
-        
-        return {
-            'completeness': completeness,
-            'consistency': consistency,
-            'validity': validity
         }
     
     def _check_missing_values(self, data: np.ndarray) -> Dict[str, Any]:
@@ -461,13 +416,6 @@ class DataQualityReport:
         report += f"  Min: {info['min']:.6f}\n"
         report += f"  Max: {info['max']:.6f}\n"
         report += f"  Median: {info['median']:.6f}\n\n"
-        
-        # Quality metrics
-        metrics = results['quality_metrics']
-        report += "Quality Metrics:\n"
-        report += f"  Completeness: {metrics['completeness']:.2%}\n"
-        report += f"  Consistency: {metrics['consistency']:.4f}\n"
-        report += f"  Validity: {metrics['validity']:.2%}\n\n"
         
         # Issues
         if results['issues']:
