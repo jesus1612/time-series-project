@@ -8,7 +8,7 @@ help:
 	@echo "Time Series Project (monorepo)"
 	@echo "=============================="
 	@echo ""
-	@echo "Prerequisites: Python 3.9+, Java 17+ for PySpark / Spark paths in TSLib."
+	@echo "Prerequisites: Python 3.9+, Java 17+ for PySpark (macOS Homebrew, Windows Adoptium/PATH, Linux OpenJDK)."
 	@echo ""
 	@echo "Targets:"
 	@echo "  install-all       - install-lib + install-ui (both venvs; see Makefile header)"
